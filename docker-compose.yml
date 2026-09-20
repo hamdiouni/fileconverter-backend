@@ -11,6 +11,9 @@ volumes:
   postgres_data:
   redis_data:
   minio_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:
 
 services:
   # ─────────────────────────────────────────────
@@ -435,3 +438,72 @@ services:
       - WORKER_CONCURRENCY=${CAD_WORKER_CONCURRENCY:-1}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_dev_password}@redis:6379
       - S3_ENDPOINT=http://minio:9000
+
+  # ─────────────────────────────────────────────
+  # Monitoring Stack
+  # ─────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: fc_prometheus
+    restart: unless-stopped
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./infrastructure/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infrastructure/monitoring/alerts:/etc/prometheus/alerts:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+    networks:
+      - fileconverter-net
+
+  grafana:
+    image: grafana/grafana:10.3.1
+    container_name: fc_grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-3100}:3000"
+    volumes:
+      - ./infrastructure/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infrastructure/monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin_dev}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - prometheus
+      - loki
+    networks:
+      - fileconverter-net
+
+  loki:
+    image: grafana/loki:2.9.4
+    container_name: fc_loki
+    restart: unless-stopped
+    ports:
+      - "${LOKI_PORT:-3200}:3100"
+    volumes:
+      - ./infrastructure/monitoring/loki.yml:/etc/loki/loki.yml:ro
+      - loki_data:/loki
+    command: -config.file=/etc/loki/loki.yml
+    networks:
+      - fileconverter-net
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: fc_alertmanager
+    restart: unless-stopped
+    ports:
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+    volumes:
+      - ./infrastructure/monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    networks:
+      - fileconverter-net

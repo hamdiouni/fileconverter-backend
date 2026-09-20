@@ -1,0 +1,806 @@
+openapi: 3.0.3
+info:
+  title: FileConverter Pro API
+  version: 1.0.0
+  description: |
+    FileConverter Pro backend API — 2,000+ file conversion types across 12 format
+    categories.  All endpoints return JSON.  Authentication uses Bearer JWT tokens
+    issued by the Auth Service.
+
+    **Rate limits** (per hour):
+    | Tier       | Requests/hour |
+    |------------|--------------|
+    | Free       | 100          |
+    | Pro        | 10,000       |
+    | Business   | 100,000      |
+    | Enterprise | Unlimited    |
+
+    When a rate limit is exceeded the API returns **HTTP 429** with a
+    `Retry-After` header indicating when the window resets.
+
+    **Quota limits** (per month):
+    | Tier       | Conversions | Max file size |
+    |------------|-------------|---------------|
+    | Free       | 50          | 10 MB         |
+    | Pro        | 500         | 100 MB        |
+    | Business   | 5,000       | 1 GB          |
+    | Enterprise | Unlimited   | Unlimited     |
+
+  contact:
+    name: FileConverter Pro Support
+    url: https://fileconverterpro.com/support
+
+servers:
+  - url: https://api.fileconverterpro.com/v1
+    description: Production
+  - url: https://sandbox.fileconverterpro.com/v1
+    description: Sandbox (relaxed rate limits, test API keys available)
+  - url: http://localhost:80/api/v1
+    description: Local development
+
+tags:
+  - name: Auth
+    description: Authentication and API key management
+  - name: Users
+    description: User profile and subscription management
+  - name: Uploads
+    description: File upload management
+  - name: Conversions
+    description: Conversion job submission and tracking
+  - name: Billing
+    description: Subscription and usage billing
+  - name: Admin
+    description: Administrative tools (admin role required)
+
+# ─── Security ─────────────────────────────────────────────────────────────────
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT access token obtained from /auth/login or /auth/register
+
+  schemas:
+    # ── Shared ──────────────────────────────────────────────────────────────
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, timestamp]
+          properties:
+            code:
+              type: string
+              example: VALIDATION_ERROR
+              enum:
+                - VALIDATION_ERROR
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - NOT_FOUND
+                - CONFLICT
+                - QUOTA_EXCEEDED
+                - RATE_LIMITED
+                - UNSUPPORTED_FORMAT
+                - FILE_TOO_LARGE
+                - VIRUS_DETECTED
+                - CONVERSION_FAILED
+                - INTERNAL_ERROR
+            message:
+              type: string
+              example: "Email is already in use"
+            details:
+              description: Optional structured error detail
+            requestId:
+              type: string
+              example: "550e8400-e29b-41d4-a716-446655440000"
+            timestamp:
+              type: string
+              format: date-time
+
+    Pagination:
+      type: object
+      properties:
+        total:
+          type: integer
+          example: 42
+        page:
+          type: integer
+          example: 1
+        pageSize:
+          type: integer
+          example: 20
+
+    # ── Auth ────────────────────────────────────────────────────────────────
+    AuthTokens:
+      type: object
+      required: [accessToken, refreshToken, expiresIn, tokenType]
+      properties:
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+        expiresIn:
+          type: integer
+          example: 900
+          description: Access token TTL in seconds
+        tokenType:
+          type: string
+          example: Bearer
+
+    RegisterRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          example: user@example.com
+        password:
+          type: string
+          minLength: 8
+          example: "Str0ngP@ss!"
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+
+    ApiKey:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          nullable: true
+        permissions:
+          type: array
+          items:
+            type: string
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    # ── Users ───────────────────────────────────────────────────────────────
+    UserProfile:
+      type: object
+      properties:
+        userId:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+          nullable: true
+        company:
+          type: string
+          nullable: true
+        tier:
+          type: string
+          enum: [free, pro, business, enterprise]
+
+    UsageStats:
+      type: object
+      properties:
+        conversionsThisMonth:
+          type: integer
+        apiCallsThisMonth:
+          type: integer
+        storageUsed:
+          type: integer
+          description: Bytes
+        quotas:
+          type: object
+          properties:
+            conversionsPerMonth:
+              type: integer
+            maxFileSize:
+              type: integer
+            storageRetentionDays:
+              type: integer
+        resetDate:
+          type: string
+          format: date-time
+
+    # ── Uploads ─────────────────────────────────────────────────────────────
+    UploadRequest:
+      type: object
+      required: [filename, contentType, size]
+      properties:
+        filename:
+          type: string
+          example: report.pdf
+        contentType:
+          type: string
+          example: application/pdf
+        size:
+          type: integer
+          description: File size in bytes
+          example: 2097152
+
+    UploadResponse:
+      type: object
+      properties:
+        uploadId:
+          type: string
+          format: uuid
+        presignedUrl:
+          type: string
+          format: uri
+        expiresIn:
+          type: integer
+          example: 900
+          description: Presigned URL TTL in seconds
+        fields:
+          type: object
+          description: Additional form fields to include with the upload
+
+    # ── Conversions ─────────────────────────────────────────────────────────
+    ConversionRequest:
+      type: object
+      required: [sourceFileId, targetFormat]
+      properties:
+        sourceFileId:
+          type: string
+          format: uuid
+        targetFormat:
+          type: string
+          example: webp
+        options:
+          type: object
+          properties:
+            quality:
+              type: integer
+              minimum: 1
+              maximum: 100
+            width:
+              type: integer
+            height:
+              type: integer
+            preserveMetadata:
+              type: boolean
+            codec:
+              type: string
+            bitrate:
+              type: string
+        idempotencyKey:
+          type: string
+          description: Client-provided key to prevent duplicate submissions
+        webhookUrl:
+          type: string
+          format: uri
+          description: URL to receive job completion notification
+
+    ConversionJob:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        sourceFileId:
+          type: string
+          format: uuid
+        sourceFormat:
+          type: string
+        targetFormat:
+          type: string
+        status:
+          type: string
+          enum: [queued, processing, completed, failed, cancelled]
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+          nullable: true
+        resultFileId:
+          type: string
+          format: uuid
+          nullable: true
+        errorMessage:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+# ─── Paths ────────────────────────────────────────────────────────────────────
+
+paths:
+  # ── Auth ──────────────────────────────────────────────────────────────────
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new user
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/AuthTokens'
+                  - type: object
+                    properties:
+                      user:
+                        $ref: '#/components/schemas/UserProfile'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Email already in use
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Login with email and password
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokens'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh access token
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        '200':
+          description: Tokens refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokens'
+        '401':
+          description: Invalid or expired refresh token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/api-keys:
+    get:
+      tags: [Auth]
+      summary: List API keys
+      operationId: listApiKeys
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: API keys list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ApiKey'
+        '401':
+          $ref: '#/components/schemas/Error'
+    post:
+      tags: [Auth]
+      summary: Generate a new API key
+      operationId: createApiKey
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                permissions:
+                  type: array
+                  items:
+                    type: string
+                expiresAt:
+                  type: string
+                  format: date-time
+      responses:
+        '201':
+          description: API key created (key value returned only once)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiKey'
+                  - type: object
+                    properties:
+                      key:
+                        type: string
+                        description: Raw API key — store securely, shown only once
+
+  /auth/api-keys/{id}:
+    delete:
+      tags: [Auth]
+      summary: Revoke an API key
+      operationId: revokeApiKey
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Key revoked
+        '404':
+          description: Key not found
+
+  # ── Users ─────────────────────────────────────────────────────────────────
+  /users/me:
+    get:
+      tags: [Users]
+      summary: Get current user profile
+      operationId: getProfile
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '401':
+          description: Unauthorized
+    patch:
+      tags: [Users]
+      summary: Update user profile
+      operationId: updateProfile
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                company:
+                  type: string
+      responses:
+        '200':
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+
+  /users/me/usage:
+    get:
+      tags: [Users]
+      summary: Get current usage statistics
+      operationId: getUsage
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Usage statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageStats'
+
+  # ── Uploads ───────────────────────────────────────────────────────────────
+  /uploads:
+    post:
+      tags: [Uploads]
+      summary: Request a presigned upload URL
+      operationId: requestUpload
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadRequest'
+      responses:
+        '200':
+          description: Presigned URL generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadResponse'
+        '400':
+          description: Validation error (unsupported type, file too large)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '402':
+          description: Quota exceeded
+
+  /uploads/{id}/complete:
+    post:
+      tags: [Uploads]
+      summary: Mark upload as complete
+      operationId: completeUpload
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Upload confirmed and virus scan triggered
+
+  # ── Conversions ───────────────────────────────────────────────────────────
+  /conversions:
+    post:
+      tags: [Conversions]
+      summary: Submit a conversion job
+      operationId: submitConversion
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConversionRequest'
+      responses:
+        '202':
+          description: Job accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobId:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    example: queued
+        '400':
+          description: Unsupported format or validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Quota exceeded
+
+    get:
+      tags: [Conversions]
+      summary: List conversion jobs
+      operationId: listConversions
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [queued, processing, completed, failed, cancelled]
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Job list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Pagination'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ConversionJob'
+
+  /conversions/{id}:
+    get:
+      tags: [Conversions]
+      summary: Get job status
+      operationId: getConversionStatus
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Job details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversionJob'
+        '404':
+          description: Job not found
+
+    delete:
+      tags: [Conversions]
+      summary: Cancel a job
+      operationId: cancelConversion
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Job cancelled
+        '409':
+          description: Job cannot be cancelled in current state
+
+  # ── Admin ─────────────────────────────────────────────────────────────────
+  /admin/users:
+    get:
+      tags: [Admin]
+      summary: List users
+      operationId: adminListUsers
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: tier
+          in: query
+          schema:
+            type: string
+        - name: suspended
+          in: query
+          schema:
+            type: boolean
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+      responses:
+        '200':
+          description: Users list
+        '403':
+          description: Admin access required
+
+  /admin/users/{id}/suspend:
+    post:
+      tags: [Admin]
+      summary: Suspend a user account
+      operationId: suspendUser
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: User suspended
+
+  /admin/jobs/{id}/retry:
+    post:
+      tags: [Admin]
+      summary: Retry a failed job
+      operationId: retryJob
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Job re-queued
+        '409':
+          description: Job is not in a retryable state
+
+  /admin/metrics:
+    get:
+      tags: [Admin]
+      summary: Get system metrics overview
+      operationId: getSystemMetrics
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: System metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  totalUsers:
+                    type: integer
+                  totalJobs:
+                    type: integer
+                  queuedJobs:
+                    type: integer
+                  failedJobs:
+                    type: integer

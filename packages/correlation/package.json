@@ -1,0 +1,33 @@
+{
+  "name": "@fileconverter/correlation",
+  "version": "1.0.0",
+  "description": "Correlation ID middleware and utilities for distributed tracing",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "jest --runInBand",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.0.0",
+    "@types/uuid": "^9.0.7",
+    "fastify": "^4.26.2",
+    "jest": "^29.7.0",
+    "supertest": "^6.3.4",
+    "@types/supertest": "^6.0.2",
+    "ts-jest": "^29.1.2",
+    "typescript": "^5.3.0"
+  }
+}

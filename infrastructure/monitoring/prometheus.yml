@@ -1,0 +1,140 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: '${ENVIRONMENT:-development}'
+    cluster: 'fileconverter'
+
+# Load alerting rules
+rule_files:
+  - /etc/prometheus/alerts/*.yml
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+# ─── Service scrape configurations ───────────────────────────────────────────
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Auth Service
+  - job_name: 'auth-service'
+    static_configs:
+      - targets: ['auth-service:3000']
+    metrics_path: '/metrics'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: service
+        replacement: 'auth-service'
+
+  # User Service
+  - job_name: 'user-service'
+    static_configs:
+      - targets: ['user-service:3001']
+    metrics_path: '/metrics'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: service
+        replacement: 'user-service'
+
+  # Upload Service
+  - job_name: 'upload-service'
+    static_configs:
+      - targets: ['upload-service:3002']
+    metrics_path: '/metrics'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: service
+        replacement: 'upload-service'
+
+  # Conversion Orchestrator
+  - job_name: 'conversion-orchestrator'
+    static_configs:
+      - targets: ['conversion-orchestrator:3003']
+    metrics_path: '/metrics'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: service
+        replacement: 'conversion-orchestrator'
+
+  # Billing Service
+  - job_name: 'billing-service'
+    static_configs:
+      - targets: ['billing-service:3004']
+    metrics_path: '/metrics'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: service
+        replacement: 'billing-service'
+
+  # Notification Service
+  - job_name: 'notification-service'
+    static_configs:
+      - targets: ['notification-service:3005']
+    metrics_path: '/metrics'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: service
+        replacement: 'notification-service'
+
+  # Admin Service
+  - job_name: 'admin-service'
+    static_configs:
+      - targets: ['admin-service:3006']
+    metrics_path: '/metrics'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: service
+        replacement: 'admin-service'
+
+  # Python Workers — each exposes /metrics on port 9090
+  - job_name: 'image-worker'
+    static_configs:
+      - targets: ['image-worker:9090']
+    metrics_path: '/metrics'
+
+  - job_name: 'video-worker'
+    static_configs:
+      - targets: ['video-worker:9090']
+    metrics_path: '/metrics'
+
+  - job_name: 'audio-worker'
+    static_configs:
+      - targets: ['audio-worker:9090']
+    metrics_path: '/metrics'
+
+  - job_name: 'document-worker'
+    static_configs:
+      - targets: ['document-worker:9090']
+    metrics_path: '/metrics'
+
+  - job_name: 'archive-worker'
+    static_configs:
+      - targets: ['archive-worker:9090']
+    metrics_path: '/metrics'
+
+  - job_name: 'cad-font-worker'
+    static_configs:
+      - targets: ['cad-font-worker:9090']
+    metrics_path: '/metrics'
+
+  # Nginx Exporter
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx-exporter:9113']
+
+  # Redis Exporter
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+
+  # PostgreSQL Exporter
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres-exporter:9187']

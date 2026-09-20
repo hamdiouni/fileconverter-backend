@@ -1,0 +1,86 @@
+groups:
+  # ─── Critical: Service availability ─────────────────────────────────────────
+  - name: service_availability
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "{{ $labels.job }} has been down for more than 1 minute."
+
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m])) by (service)
+          /
+          sum(rate(http_requests_total[5m])) by (service)
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate on {{ $labels.service }}"
+          description: "Error rate exceeds 5% over 5 minutes on {{ $labels.service }}."
+
+  # ─── Warning: Performance ─────────────────────────────────────────────────
+  - name: performance
+    rules:
+      - alert: HighP95Latency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service)
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High P95 latency on {{ $labels.service }}"
+          description: "P95 latency exceeds 500ms on {{ $labels.service }}."
+
+      - alert: HighQueueDepth
+        expr: conversion_queue_depth_gauge > 1000
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High queue depth for format family {{ $labels.format_family }}"
+          description: "Queue depth > 1000 for {{ $labels.format_family }}."
+
+      - alert: CriticalQueueDepth
+        expr: conversion_queue_depth_gauge > 5000
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical queue depth for {{ $labels.format_family }}"
+          description: "Queue depth > 5000 for {{ $labels.format_family }}. Workers may be stuck."
+
+  # ─── Warning: Dead-letter queue ──────────────────────────────────────────
+  - name: dlq_monitoring
+    rules:
+      - alert: DLQDepthHigh
+        expr: bullmq_failed_jobs_total > 100
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Dead-letter queue depth exceeds 100 jobs"
+          description: "{{ $value }} jobs in DLQ. Manual intervention may be required."
+
+  # ─── Warning: Error rate moderate ────────────────────────────────────────
+  - name: error_rate_warning
+    rules:
+      - alert: ModerateErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m])) by (service)
+          /
+          sum(rate(http_requests_total[5m])) by (service)
+          > 0.02
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Moderate error rate on {{ $labels.service }}"
+          description: "Error rate exceeds 2% over 5 minutes on {{ $labels.service }}."

@@ -1,0 +1,41 @@
+{
+  "title": "Worker Health",
+  "uid": "fileconverter-worker-health",
+  "tags": ["fileconverter", "workers"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "refresh": "30s",
+  "panels": [
+    {
+      "title": "Worker Uptime",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "targets": [{
+        "expr": "up{job=~\".*-worker\"}",
+        "legendFormat": "{{job}}"
+      }]
+    },
+    {
+      "title": "Jobs Processed/min by Worker",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        { "expr": "sum(rate(image_jobs_processed_total[1m])) * 60",  "legendFormat": "image" },
+        { "expr": "sum(rate(video_jobs_processed_total[1m])) * 60",  "legendFormat": "video" },
+        { "expr": "sum(rate(audio_jobs_processed_total[1m])) * 60",  "legendFormat": "audio" },
+        { "expr": "sum(rate(document_jobs_processed_total[1m])) * 60", "legendFormat": "document" },
+        { "expr": "sum(rate(archive_jobs_processed_total[1m])) * 60", "legendFormat": "archive" }
+      ]
+    },
+    {
+      "title": "Job Failures by Worker",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        { "expr": "sum(rate(image_jobs_processed_total{status=\"failed\"}[1m])) * 60",   "legendFormat": "image" },
+        { "expr": "sum(rate(video_jobs_processed_total{status=\"failed\"}[1m])) * 60",   "legendFormat": "video" },
+        { "expr": "sum(rate(document_jobs_processed_total{status=\"failed\"}[1m])) * 60","legendFormat": "document" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "title": "System Overview",
+  "uid": "fileconverter-system-overview",
+  "tags": ["fileconverter", "overview"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "refresh": "30s",
+  "panels": [
+    {
+      "title": "Request Rate (all services)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [{
+        "expr": "sum(rate(http_requests_total[5m]))",
+        "legendFormat": "req/s"
+      }]
+    },
+    {
+      "title": "Error Rate",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [{
+        "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) / sum(rate(http_requests_total[5m])) * 100",
+        "legendFormat": "error %"
+      }]
+    },
+    {
+      "title": "P95 Latency (ms)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [{
+        "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) * 1000",
+        "legendFormat": "p95 ms"
+      }]
+    },
+    {
+      "title": "Active Conversion Jobs",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "targets": [{
+        "expr": "sum(conversion_queue_depth_gauge)",
+        "legendFormat": "queued jobs"
+      }]
+    },
+    {
+      "title": "Request Rate by Service",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 4 },
+      "targets": [{
+        "expr": "sum(rate(http_requests_total[5m])) by (service)",
+        "legendFormat": "{{service}}"
+      }]
+    },
+    {
+      "title": "Error Rate by Service (%)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
+      "targets": [{
+        "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) by (service) / sum(rate(http_requests_total[5m])) by (service) * 100",
+        "legendFormat": "{{service}}"
+      }]
+    }
+  ]
+}

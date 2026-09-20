@@ -1,0 +1,46 @@
+{
+  "title": "Business Metrics",
+  "uid": "fileconverter-business",
+  "tags": ["fileconverter", "business"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "refresh": "5m",
+  "panels": [
+    {
+      "title": "User Registrations / hour",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{
+        "expr": "sum(increase(auth_requests_total{endpoint=\"register\",status=\"success\"}[1h]))",
+        "legendFormat": "registrations"
+      }]
+    },
+    {
+      "title": "Subscription Distribution",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [{
+        "expr": "sum(subscription_changes_total) by (tier)",
+        "legendFormat": "{{tier}}"
+      }]
+    },
+    {
+      "title": "Payment Failures",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [{
+        "expr": "sum(increase(payment_failures_total[1h]))",
+        "legendFormat": "payment failures/h"
+      }]
+    },
+    {
+      "title": "Webhook Delivery Success Rate (%)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 8 },
+      "targets": [{
+        "expr": "sum(rate(webhook_deliveries_total{status=\"success\"}[5m])) / sum(rate(webhook_deliveries_total[5m])) * 100",
+        "legendFormat": "webhook success %"
+      }]
+    }
+  ]
+}
