@@ -1,0 +1,10 @@
+process.env.NODE_ENV = 'test';
+process.env.JWT_ACCESS_SECRET = 'test_access_secret_min_32_chars_long_xxxx';
+process.env.DATABASE_URL = 'postgresql://test:test@localhost:5432/test';
+process.env.REDIS_URL = 'redis://localhost:6379';
+process.env.PORT = '3002';
+process.env.S3_ENDPOINT = 'http://localhost:9000';
+process.env.S3_REGION = 'us-east-1';
+process.env.S3_ACCESS_KEY_ID = 'minioadmin';
+process.env.S3_SECRET_ACCESS_KEY = 'minioadmin';
+process.env.S3_BUCKET_UPLOADS = 'fileconverter-uploads';
