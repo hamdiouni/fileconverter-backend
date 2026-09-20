@@ -1,0 +1,437 @@
+version: "3.9"
+
+# FileConverter Pro - Local Development Environment
+# Usage: make up
+
+networks:
+  fileconverter-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+
+services:
+  # ─────────────────────────────────────────────
+  # Infrastructure Services
+  # ─────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: fc_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fileconverter}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fileconverter_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-fileconverter}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - fileconverter-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fileconverter} -d ${POSTGRES_DB:-fileconverter}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: fc_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_dev_password}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - fileconverter-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD:-redis_dev_password}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: fc_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin_dev}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - fileconverter-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # MinIO bucket initialisation (runs once then exits)
+  minio-init:
+    image: minio/mc:latest
+    container_name: fc_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - fileconverter-net
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin_dev};
+        mc mb --ignore-existing local/fileconverter-uploads;
+        mc mb --ignore-existing local/fileconverter-results;
+        mc mb --ignore-existing local/fileconverter-temp;
+        echo 'MinIO buckets created successfully';
+      "
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: fc_mailhog
+    restart: unless-stopped
+    ports:
+      - "${MAILHOG_SMTP_PORT:-1025}:1025"
+      - "${MAILHOG_HTTP_PORT:-8025}:8025"
+    networks:
+      - fileconverter-net
+
+  clamav:
+    image: clamav/clamav:stable
+    container_name: fc_clamav
+    restart: unless-stopped
+    ports:
+      - "${CLAMAV_PORT:-3310}:3310"
+    networks:
+      - fileconverter-net
+    healthcheck:
+      test: ["CMD", "clamdscan", "--ping", "3"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # ─────────────────────────────────────────────
+  # API Services
+  # ─────────────────────────────────────────────
+
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    container_name: fc_api_gateway
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_HTTP_PORT:-80}:80"
+      - "${GATEWAY_HTTPS_PORT:-443}:443"
+    depends_on:
+      - auth-service
+      - user-service
+      - upload-service
+      - orchestrator-service
+    networks:
+      - fileconverter-net
+    environment:
+      - AUTH_SERVICE_URL=http://auth-service:3000
+      - USER_SERVICE_URL=http://user-service:3001
+      - UPLOAD_SERVICE_URL=http://upload-service:3002
+      - ORCHESTRATOR_SERVICE_URL=http://orchestrator-service:3003
+      - BILLING_SERVICE_URL=http://billing-service:3004
+      - NOTIFICATION_SERVICE_URL=http://notification-service:3005
+      - ADMIN_SERVICE_URL=http://admin-service:3006
+
+  auth-service:
+    build:
+      context: ./services/auth-service
+      dockerfile: Dockerfile
+    container_name: fc_auth_service
+    restart: unless-stopped
+    ports:
+      - "${AUTH_SERVICE_PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - fileconverter-net
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=3000
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-fileconverter}:${POSTGRES_PASSWORD:-fileconverter_dev}@postgres:5432/${POSTGRES_DB:-fileconverter}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_dev_password}@redis:6379
+
+  user-service:
+    build:
+      context: ./services/user-service
+      dockerfile: Dockerfile
+    container_name: fc_user_service
+    restart: unless-stopped
+    ports:
+      - "${USER_SERVICE_PORT:-3001}:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - fileconverter-net
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=3001
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-fileconverter}:${POSTGRES_PASSWORD:-fileconverter_dev}@postgres:5432/${POSTGRES_DB:-fileconverter}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_dev_password}@redis:6379
+
+  upload-service:
+    build:
+      context: ./services/upload-service
+      dockerfile: Dockerfile
+    container_name: fc_upload_service
+    restart: unless-stopped
+    ports:
+      - "${UPLOAD_SERVICE_PORT:-3002}:3002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - fileconverter-net
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=3002
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-fileconverter}:${POSTGRES_PASSWORD:-fileconverter_dev}@postgres:5432/${POSTGRES_DB:-fileconverter}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_dev_password}@redis:6379
+      - S3_ENDPOINT=http://minio:9000
+
+  orchestrator-service:
+    build:
+      context: ./services/orchestrator-service
+      dockerfile: Dockerfile
+    container_name: fc_orchestrator_service
+    restart: unless-stopped
+    ports:
+      - "${ORCHESTRATOR_SERVICE_PORT:-3003}:3003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - fileconverter-net
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=3003
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-fileconverter}:${POSTGRES_PASSWORD:-fileconverter_dev}@postgres:5432/${POSTGRES_DB:-fileconverter}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_dev_password}@redis:6379
+
+  billing-service:
+    build:
+      context: ./services/billing-service
+      dockerfile: Dockerfile
+    container_name: fc_billing_service
+    restart: unless-stopped
+    ports:
+      - "${BILLING_SERVICE_PORT:-3004}:3004"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - fileconverter-net
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=3004
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-fileconverter}:${POSTGRES_PASSWORD:-fileconverter_dev}@postgres:5432/${POSTGRES_DB:-fileconverter}
+
+  notification-service:
+    build:
+      context: ./services/notification-service
+      dockerfile: Dockerfile
+    container_name: fc_notification_service
+    restart: unless-stopped
+    ports:
+      - "${NOTIFICATION_SERVICE_PORT:-3005}:3005"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - fileconverter-net
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=3005
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-fileconverter}:${POSTGRES_PASSWORD:-fileconverter_dev}@postgres:5432/${POSTGRES_DB:-fileconverter}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_dev_password}@redis:6379
+      - SMTP_HOST=mailhog
+      - SMTP_PORT=1025
+
+  admin-service:
+    build:
+      context: ./services/admin-service
+      dockerfile: Dockerfile
+    container_name: fc_admin_service
+    restart: unless-stopped
+    ports:
+      - "${ADMIN_SERVICE_PORT:-3006}:3006"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - fileconverter-net
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=3006
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-fileconverter}:${POSTGRES_PASSWORD:-fileconverter_dev}@postgres:5432/${POSTGRES_DB:-fileconverter}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_dev_password}@redis:6379
+
+  # ─────────────────────────────────────────────
+  # Conversion Workers
+  # ─────────────────────────────────────────────
+
+  image-worker:
+    build:
+      context: ./workers/image-worker
+      dockerfile: Dockerfile
+    container_name: fc_image_worker
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - fileconverter-net
+    env_file:
+      - .env
+    environment:
+      - WORKER_CONCURRENCY=${IMAGE_WORKER_CONCURRENCY:-2}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_dev_password}@redis:6379
+      - S3_ENDPOINT=http://minio:9000
+
+  video-worker:
+    build:
+      context: ./workers/video-worker
+      dockerfile: Dockerfile
+    container_name: fc_video_worker
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - fileconverter-net
+    env_file:
+      - .env
+    environment:
+      - WORKER_CONCURRENCY=${VIDEO_WORKER_CONCURRENCY:-1}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_dev_password}@redis:6379
+      - S3_ENDPOINT=http://minio:9000
+
+  audio-worker:
+    build:
+      context: ./workers/audio-worker
+      dockerfile: Dockerfile
+    container_name: fc_audio_worker
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - fileconverter-net
+    env_file:
+      - .env
+    environment:
+      - WORKER_CONCURRENCY=${AUDIO_WORKER_CONCURRENCY:-2}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_dev_password}@redis:6379
+      - S3_ENDPOINT=http://minio:9000
+
+  document-worker:
+    build:
+      context: ./workers/document-worker
+      dockerfile: Dockerfile
+    container_name: fc_document_worker
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - fileconverter-net
+    env_file:
+      - .env
+    environment:
+      - WORKER_CONCURRENCY=${DOCUMENT_WORKER_CONCURRENCY:-2}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_dev_password}@redis:6379
+      - S3_ENDPOINT=http://minio:9000
+
+  archive-worker:
+    build:
+      context: ./workers/archive-worker
+      dockerfile: Dockerfile
+    container_name: fc_archive_worker
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - fileconverter-net
+    env_file:
+      - .env
+    environment:
+      - WORKER_CONCURRENCY=${ARCHIVE_WORKER_CONCURRENCY:-1}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_dev_password}@redis:6379
+      - S3_ENDPOINT=http://minio:9000
+
+  cad-worker:
+    build:
+      context: ./workers/cad-worker
+      dockerfile: Dockerfile
+    container_name: fc_cad_worker
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - fileconverter-net
+    env_file:
+      - .env
+    environment:
+      - WORKER_CONCURRENCY=${CAD_WORKER_CONCURRENCY:-1}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_dev_password}@redis:6379
+      - S3_ENDPOINT=http://minio:9000

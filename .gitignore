@@ -1,0 +1,116 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# FileConverter Pro Backend – .gitignore
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ─── Environment files ───────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+.env.development
+.env.staging
+.env.production
+# Keep .env.example (template) in version control
+!.env.example
+
+# ─── Node / npm ──────────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.pnp
+.pnp.js
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+
+# ─── TypeScript build output ─────────────────────────────────────────────────
+dist/
+build/
+*.tsbuildinfo
+*.js.map
+
+# ─── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.whl
+MANIFEST
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Python virtual environments
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# Poetry
+.poetry-cache/
+
+# ─── Pytest / testing ────────────────────────────────────────────────────────
+.pytest_cache/
+.cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+nosetests.xml
+coverage/
+
+# Jest
+coverage/
+
+# ─── IDE / Editor ────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ─── Docker ──────────────────────────────────────────────────────────────────
+# Docker override files containing secrets should not be committed
+docker-compose.override.yml
+
+# ─── Logs ────────────────────────────────────────────────────────────────────
+logs/
+*.log
+*.log.*
+
+# ─── Prisma ──────────────────────────────────────────────────────────────────
+# Generated Prisma client (regenerated from schema on install)
+packages/prisma/src/generated/
+
+# ─── Certificates / secrets ──────────────────────────────────────────────────
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+certs/
+
+# ─── Temp / scratch ──────────────────────────────────────────────────────────
+tmp/
+temp/
+.tmp/
+*.tmp
+*.bak
+*.swp

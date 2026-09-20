@@ -1,0 +1,339 @@
+version: "3.9"
+
+# FileConverter Pro - Production Environment
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Overrides: resource limits, replicas, restart policies, health-check thresholds
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 60s
+
+x-service-defaults: &service-defaults
+  restart: always
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "100m"
+      max-file: "10"
+
+services:
+  # ─────────────────────────────────────────────
+  # Infrastructure
+  # ─────────────────────────────────────────────
+
+  postgres:
+    <<: *service-defaults
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+
+  redis:
+    <<: *service-defaults
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
+        reservations:
+          cpus: "0.25"
+          memory: 512M
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD}", "ping"]
+
+  minio:
+    <<: *service-defaults
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+
+  clamav:
+    <<: *service-defaults
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+
+  # ─────────────────────────────────────────────
+  # API Services
+  # ─────────────────────────────────────────────
+
+  api-gateway:
+    <<: *service-defaults
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        delay: 10s
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+
+  auth-service:
+    <<: *service-defaults
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+
+  user-service:
+    <<: *service-defaults
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+
+  upload-service:
+    <<: *service-defaults
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "wget", "-qO-", "http://localhost:3002/health"]
+
+  orchestrator-service:
+    <<: *service-defaults
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "wget", "-qO-", "http://localhost:3003/health"]
+
+  billing-service:
+    <<: *service-defaults
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "wget", "-qO-", "http://localhost:3004/health"]
+
+  notification-service:
+    <<: *service-defaults
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "wget", "-qO-", "http://localhost:3005/health"]
+
+  admin-service:
+    <<: *service-defaults
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "wget", "-qO-", "http://localhost:3006/health"]
+
+  # ─────────────────────────────────────────────
+  # Conversion Workers
+  # ─────────────────────────────────────────────
+
+  image-worker:
+    <<: *service-defaults
+    deploy:
+      replicas: ${IMAGE_WORKER_REPLICAS:-2}
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+      update_config:
+        parallelism: 1
+        delay: 30s
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9090/health')"]
+    environment:
+      - WORKER_CONCURRENCY=${IMAGE_WORKER_CONCURRENCY:-4}
+
+  video-worker:
+    <<: *service-defaults
+    deploy:
+      replicas: ${VIDEO_WORKER_REPLICAS:-2}
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 8G
+        reservations:
+          cpus: "1.0"
+          memory: 2G
+      update_config:
+        parallelism: 1
+        delay: 60s
+    healthcheck:
+      <<: *healthcheck-defaults
+      start_period: 120s
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9090/health')"]
+    environment:
+      - WORKER_CONCURRENCY=${VIDEO_WORKER_CONCURRENCY:-2}
+
+  audio-worker:
+    <<: *service-defaults
+    deploy:
+      replicas: ${AUDIO_WORKER_REPLICAS:-2}
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9090/health')"]
+    environment:
+      - WORKER_CONCURRENCY=${AUDIO_WORKER_CONCURRENCY:-4}
+
+  document-worker:
+    <<: *service-defaults
+    deploy:
+      replicas: ${DOCUMENT_WORKER_REPLICAS:-2}
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+    healthcheck:
+      <<: *healthcheck-defaults
+      start_period: 120s
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9090/health')"]
+    environment:
+      - WORKER_CONCURRENCY=${DOCUMENT_WORKER_CONCURRENCY:-3}
+
+  archive-worker:
+    <<: *service-defaults
+    deploy:
+      replicas: ${ARCHIVE_WORKER_REPLICAS:-1}
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9090/health')"]
+    environment:
+      - WORKER_CONCURRENCY=${ARCHIVE_WORKER_CONCURRENCY:-2}
+
+  cad-worker:
+    <<: *service-defaults
+    deploy:
+      replicas: ${CAD_WORKER_REPLICAS:-1}
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+    healthcheck:
+      <<: *healthcheck-defaults
+      start_period: 120s
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9090/health')"]
+    environment:
+      - WORKER_CONCURRENCY=${CAD_WORKER_CONCURRENCY:-1}
