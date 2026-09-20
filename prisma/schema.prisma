@@ -1,0 +1,223 @@
+// FileConverter Pro — Prisma Schema
+// Requirements: 17.1, 17.2, 17.3, 17.5, 17.6, 17.7
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Users ────────────────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  passwordHash  String?
+  oauthProvider String?
+  oauthId       String?
+  emailVerified Boolean   @default(false)
+  suspended     Boolean   @default(false)
+  tier          String    @default("free")
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime? // soft delete — Req 17.7
+
+  profile        UserProfile?
+  subscription   Subscription?
+  apiKeys        ApiKey[]
+  refreshTokens  RefreshToken[]
+  fileUploads    FileUpload[]
+  conversionJobs ConversionJob[]
+  usageLogs      UsageLog[]
+
+  @@index([email])
+  @@index([createdAt])
+  @@map("users")
+}
+
+model UserProfile {
+  userId    String   @id
+  name      String?
+  company   String?
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_profiles")
+}
+
+// ─── Authentication ───────────────────────────────────────────────────────────
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@map("refresh_tokens")
+}
+
+model ApiKey {
+  id          String    @id @default(uuid())
+  userId      String
+  keyHash     String    @unique
+  name        String?
+  permissions String[]
+  expiresAt   DateTime?
+  lastUsedAt  DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([keyHash])
+  @@map("api_keys")
+}
+
+// ─── Subscriptions ────────────────────────────────────────────────────────────
+
+model Subscription {
+  userId               String   @id
+  tier                 String   @default("free")
+  status               String   @default("active") // active | cancelled | past_due | paused
+  currentPeriodStart   DateTime @default(now())
+  currentPeriodEnd     DateTime @default(now())
+  stripeSubscriptionId String?
+  stripeCustomerId     String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([stripeSubscriptionId])
+  @@index([stripeCustomerId])
+  @@map("subscriptions")
+}
+
+// ─── Usage Tracking ───────────────────────────────────────────────────────────
+
+model UsageLog {
+  id        String   @id @default(uuid())
+  userId    String
+  quotaType String   // conversions | api_calls | storage
+  amount    Int      @default(1)
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, quotaType])
+  @@index([createdAt])
+  @@map("usage_logs")
+}
+
+// ─── File Uploads ─────────────────────────────────────────────────────────────
+
+model FileUpload {
+  id               String    @id @default(uuid())
+  userId           String
+  filename         String
+  originalFilename String
+  size             Int
+  contentType      String
+  storageKey       String    @unique
+  virusScanStatus  String    @default("pending") // pending | clean | infected
+  uploadStatus     String    @default("pending") // pending | uploaded | expired
+  uploadedAt       DateTime?
+  expiresAt        DateTime
+  createdAt        DateTime  @default(now())
+
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversionJobs ConversionJob[]
+
+  @@index([userId])
+  @@index([uploadStatus])
+  @@index([expiresAt])
+  @@map("file_uploads")
+}
+
+// ─── Conversion Jobs ──────────────────────────────────────────────────────────
+
+// Req 17.6: id, user_id, source_file_id, target_format, status, error_message, created_at, completed_at
+model ConversionJob {
+  id             String    @id @default(uuid())
+  userId         String
+  sourceFileId   String
+  sourceFormat   String
+  targetFormat   String
+  status         String    @default("queued") // queued | processing | completed | failed | cancelled
+  priority       Int       @default(0)
+  options        Json      @default("{}")
+  formatFamily   String    // image | video | audio | document | archive | cad | font
+  conversionPath String[]
+  resultFileId   String?
+  errorMessage   String?
+  webhookUrl     String?
+  idempotencyKey String?   @unique
+  workerId       String?
+  retryCount     Int       @default(0)
+  progress       Int       @default(0)
+  createdAt      DateTime  @default(now())
+  startedAt      DateTime?
+  completedAt    DateTime?
+  updatedAt      DateTime  @updatedAt
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceFile FileUpload @relation(fields: [sourceFileId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([idempotencyKey])
+  @@map("conversion_jobs")
+}
+
+// ─── Conversion Cache ─────────────────────────────────────────────────────────
+
+model ConversionCache {
+  id             String   @id @default(uuid())
+  sourceFileHash String
+  targetFormat   String
+  optionsHash    String
+  resultFileId   String
+  hitCount       Int      @default(0)
+  lastUsedAt     DateTime @default(now())
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
+
+  @@unique([sourceFileHash, targetFormat, optionsHash])
+  @@index([sourceFileHash, targetFormat])
+  @@index([expiresAt])
+  @@map("conversion_cache")
+}
+
+// ─── Webhook Deliveries ───────────────────────────────────────────────────────
+
+model WebhookDelivery {
+  id          String    @id @default(uuid())
+  jobId       String
+  webhookUrl  String
+  status      String    @default("pending") // pending | success | failed
+  statusCode  Int?
+  retryCount  Int       @default(0)
+  payload     Json
+  deliveredAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([jobId])
+  @@index([status])
+  @@map("webhook_deliveries")
+}
