@@ -1,4 +1,4 @@
-﻿{
+{
     "name":  "@fileconverter/auth-service",
     "version":  "1.0.0",
     "description":  "Auth Service for FileConverter Pro - JWT, OAuth, API key management",

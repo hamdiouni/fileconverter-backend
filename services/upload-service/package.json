@@ -1,4 +1,4 @@
-﻿{
+{
     "name":  "@fileconverter/upload-service",
     "version":  "1.0.0",
     "description":  "Upload Service for FileConverter Pro - presigned URLs, virus scanning, file management",

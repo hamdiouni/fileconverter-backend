@@ -1,4 +1,4 @@
-﻿{
+{
     "name":  "@fileconverter/billing-service",
     "version":  "1.0.0",
     "description":  "Billing Service for FileConverter Pro - Stripe checkout, portal, webhooks",

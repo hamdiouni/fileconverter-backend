@@ -1,4 +1,4 @@
-﻿{
+{
     "name":  "@fileconverter/notification-service",
     "version":  "1.0.0",
     "description":  "Notification Service for FileConverter Pro - Webhooks, Email, Batching",

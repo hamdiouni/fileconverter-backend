@@ -1,4 +1,4 @@
-﻿{
+{
     "name":  "@fileconverter/conversion-orchestrator",
     "version":  "1.0.0",
     "description":  "Conversion Orchestrator Service for FileConverter Pro - job management and routing",

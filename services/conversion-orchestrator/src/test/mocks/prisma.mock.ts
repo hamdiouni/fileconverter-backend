@@ -154,10 +154,30 @@ export class InMemoryPrismaClient {
   $disconnect = async () => {};
   $connect = async () => {};
 
+  users: Map<string, any> = new Map();
+
+  user = {
+    upsert: async ({ where, create, update }: any) => {
+      let u = this.users.get(where.id);
+      if (!u) {
+        u = { ...create, id: where.id ?? create.id };
+        this.users.set(where.id, u);
+      } else {
+        u = { ...u, ...update };
+        this.users.set(where.id, u);
+      }
+      return u;
+    },
+    findUnique: async ({ where }: any) => {
+      return this.users.get(where.id) ?? null;
+    },
+  };
+
   /** Reset all in-memory data (call between tests) */
   reset() {
     this.jobs.clear();
     this.usageLogs.clear();
+    this.users.clear();
   }
 
   /**
