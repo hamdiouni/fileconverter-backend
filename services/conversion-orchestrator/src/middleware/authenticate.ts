@@ -18,9 +18,16 @@ export async function authenticate(request: FastifyRequest, reply: FastifyReply)
   const authHeader = request.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return reply
-      .status(401)
-      .send({ error: { code: 'UNAUTHORIZED', message: 'Missing bearer token' } });
+    // Guest Mode: Assign guest user session
+    const clientIp = (request.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || request.ip || '127.0.0.1';
+    const guestId = `guest_${clientIp.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    request.user = {
+      userId: guestId,
+      email: `${guestId}@guest.local`,
+      tier: 'guest',
+      permissions: [],
+    };
+    return;
   }
 
   const token = authHeader.slice(7);
@@ -34,14 +41,15 @@ export async function authenticate(request: FastifyRequest, reply: FastifyReply)
     };
 
     request.user = payload;
-  } catch (err) {
-    if (err instanceof jwt.TokenExpiredError) {
-      return reply
-        .status(401)
-        .send({ error: { code: 'TOKEN_EXPIRED', message: 'Access token has expired' } });
-    }
-    return reply
-      .status(401)
-      .send({ error: { code: 'INVALID_TOKEN', message: 'Invalid access token' } });
+  } catch {
+    // Fallback to Guest Mode if token expired or invalid
+    const clientIp = (request.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || request.ip || '127.0.0.1';
+    const guestId = `guest_${clientIp.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    request.user = {
+      userId: guestId,
+      email: `${guestId}@guest.local`,
+      tier: 'guest',
+      permissions: [],
+    };
   }
 }

@@ -15,3 +15,10 @@ def handle_shutdown(signum, frame):
 
 signal.signal(signal.SIGTERM, handle_shutdown)
 signal.signal(signal.SIGINT, handle_shutdown)
+
+if __name__ == "__main__":
+    import time
+    log.info("worker_started", service="image-worker")
+    while not _shutdown:
+        time.sleep(1)
+

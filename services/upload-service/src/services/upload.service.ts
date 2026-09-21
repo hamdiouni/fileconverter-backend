@@ -125,9 +125,42 @@ export class UploadService {
       throw err;
     }
 
+    // Ensure DB user record exists (creates guest user if unauthenticated)
+    await (this.prisma as any).user.upsert({
+      where: { id: userId },
+      update: {},
+      create: {
+        id: userId,
+        email: `${userId}@guest.local`,
+        passwordHash: 'guest_account',
+        tier: userTier === 'guest' ? 'guest' : 'free',
+      },
+    });
+
+    // Enforce Guest Mode daily limit (20 free uploads/day)
+    const guestLimit = parseInt(process.env.GUEST_DAILY_LIMIT || '20', 10);
+    if (userTier === 'guest' || userId.startsWith('guest_')) {
+      const today = new Date().toISOString().slice(0, 10);
+      const redisKey = `guest_daily_uploads:${userId}:${today}`;
+      const count = await this.redis.incr(redisKey);
+      if (count === 1) {
+        await this.redis.expire(redisKey, 86400);
+      }
+      if (count > guestLimit) {
+        const err = new Error(`Guest daily conversion limit reached (${guestLimit} per day). Create a free account for higher limits!`) as Error & { statusCode: number; code: string };
+        err.statusCode = 429;
+        err.code = 'GUEST_LIMIT_EXCEEDED';
+        throw err;
+      }
+    }
+
     const uploadId = uuidv4();
     const storageKey = this.getStorageKey(userId, uploadId, filename);
     const expiresAt = this.getExpiresAt(userTier);
+
+    // Cache file extension in Redis for orchestrator lookup
+    const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+    await this.redis.set(`file:format:${uploadId}`, ext, 'EX', 86400);
 
     // Generate presigned URL (15 min)
     const presignedUrl = await this.storage.generatePresignedUploadUrl(storageKey, contentType, 15 * 60);
@@ -146,7 +179,6 @@ export class UploadService {
         virusScanStatus: 'pending',
         expiresAt,
         createdAt: new Date(),
-        updatedAt: new Date(),
       },
     });
 
@@ -170,7 +202,7 @@ export class UploadService {
     const now = new Date();
     const updated = await (this.prisma as any).fileUpload.update({
       where: { id: uploadId },
-      data: { uploadStatus: 'uploaded', virusScanStatus: 'scanning', uploadedAt: now, updatedAt: now },
+      data: { uploadStatus: 'uploaded', virusScanStatus: 'scanning', uploadedAt: now },
     });
 
     uploadRequestsTotal.inc({ status: 'completed' });
@@ -187,7 +219,7 @@ export class UploadService {
     virusScansTotal.inc({ result: 'clean' });
     await (this.prisma as any).fileUpload.update({
       where: { id: uploadId },
-      data: { virusScanStatus: 'clean', updatedAt: new Date() },
+      data: { virusScanStatus: 'clean' },
     });
   }
 
@@ -245,7 +277,6 @@ export class UploadService {
         virusScanStatus: 'pending',
         expiresAt,
         createdAt: new Date(),
-        updatedAt: new Date(),
       },
     });
 
@@ -263,7 +294,7 @@ export class UploadService {
     const now = new Date();
     return (this.prisma as any).fileUpload.update({
       where: { id: uploadId },
-      data: { uploadStatus: 'uploaded', size: totalSize, uploadedAt: now, updatedAt: now },
+      data: { uploadStatus: 'uploaded', size: totalSize, uploadedAt: now },
     });
   }
 }

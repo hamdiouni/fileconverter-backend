@@ -19,23 +19,23 @@ route:
 receivers:
   - name: 'default'
     webhook_configs:
-      - url: '${ALERTMANAGER_WEBHOOK_URL:-http://localhost:9090/alert}'
+      - url: 'http://localhost:9090/alert'
         send_resolved: true
 
   - name: 'critical-receiver'
     webhook_configs:
-      - url: '${PAGERDUTY_WEBHOOK_URL:-http://localhost:9090/pagerduty}'
+      - url: 'http://localhost:9090/pagerduty'
         send_resolved: true
     # Uncomment and configure for Slack:
     # slack_configs:
-    #   - api_url: '${SLACK_WEBHOOK_URL}'
+    #   - api_url: 'https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX'
     #     channel: '#alerts-critical'
     #     title: '[CRITICAL] {{ .CommonAnnotations.summary }}'
     #     text: '{{ .CommonAnnotations.description }}'
 
   - name: 'warning-receiver'
     webhook_configs:
-      - url: '${SLACK_WEBHOOK_URL:-http://localhost:9090/slack}'
+      - url: 'http://localhost:9090/slack'
         send_resolved: true
     # Uncomment and configure for Slack:
     # slack_configs:

@@ -41,6 +41,3 @@ limits_config:
   retention_period: 720h
   ingestion_rate_mb: 16
   ingestion_burst_size_mb: 32
-
-# Stream labels for service log routing
-pipeline_stages: []

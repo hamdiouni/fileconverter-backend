@@ -5,7 +5,8 @@ import { UploadService } from '../services/upload.service';
 const createUploadSchema = z.object({
   filename: z.string().min(1).max(500),
   contentType: z.string().min(1),
-  fileSize: z.number().int().positive(),
+  fileSize: z.number().int().positive().optional(),
+  size: z.number().int().positive().optional(),
 });
 
 const multipartInitSchema = z.object({
@@ -21,11 +22,17 @@ export class UploadController {
     if (!parsed.success) {
       return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: 'Invalid input', details: parsed.error.errors } });
     }
+    const fileSize = parsed.data.fileSize ?? parsed.data.size;
+    if (!fileSize) {
+      return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: 'fileSize or size is required' } });
+    }
     try {
       const result = await this.uploadService.createUpload({
         userId: request.user!.userId,
         userTier: request.user!.tier,
-        ...parsed.data,
+        filename: parsed.data.filename,
+        contentType: parsed.data.contentType,
+        fileSize,
       });
       return reply.status(201).send(result);
     } catch (err: any) {

@@ -221,6 +221,18 @@ export class ConversionService {
       throw err;
     }
 
+    // Ensure DB user record exists (creates guest user if unauthenticated)
+    await (this.prisma as any).user.upsert({
+      where: { id: userId },
+      update: {},
+      create: {
+        id: userId,
+        email: `${userId}@guest.local`,
+        passwordHash: 'guest_account',
+        tier: 'guest',
+      },
+    });
+
     const formatFamily = getFormatFamily(sourceFormat);
 
     // Create job record
@@ -252,7 +264,24 @@ export class ConversionService {
    * In production this would look up file_uploads table.
    */
   private async resolveSourceFormat(sourceFileId: string): Promise<string> {
-    // Try to look up from DB first
+    // 1. Try Redis lookup first (fastest)
+    const cached = await this.redis.get(`file:format:${sourceFileId}`);
+    if (cached) return cached;
+
+    // 2. Try fileUploads DB table lookup
+    try {
+      const fileUpload = await (this.prisma as any).fileUpload.findUnique({
+        where: { id: sourceFileId },
+      });
+      if (fileUpload?.filename) {
+        const ext = fileUpload.filename.split('.').pop()?.toLowerCase();
+        if (ext) return ext;
+      }
+    } catch {
+      // fallback
+    }
+
+    // 3. Try conversionJob DB table lookup
     const fileRecord = await (this.prisma as any).conversionJob.findFirst({
       where: { sourceFileId },
     });
@@ -260,11 +289,7 @@ export class ConversionService {
       return fileRecord.sourceFormat;
     }
 
-    // Try Redis lookup
-    const cached = await this.redis.get(`file:format:${sourceFileId}`);
-    if (cached) return cached;
-
-    // Derive from sourceFileId encoding (e.g. "file-png-abc123")
+    // 4. Derive from sourceFileId encoding (e.g. "file-png-abc123")
     const parts = sourceFileId.toLowerCase().split('-');
     for (const part of parts) {
       if (FORMAT_FAMILIES[part]) return part;
@@ -389,6 +414,17 @@ export class ConversionService {
    * Requirements: 5.5
    */
   async checkQuota(userId: string): Promise<QuotaCheckResult> {
+    if (userId.startsWith('guest_')) {
+      const today = new Date().toISOString().slice(0, 10);
+      const redisKey = `guest_conversions:${userId}:${today}`;
+      const usedStr = await this.redis.get(redisKey);
+      const used = usedStr ? parseInt(usedStr, 10) : 0;
+      const GUEST_DAILY_LIMIT = 5;
+      const remaining = Math.max(0, GUEST_DAILY_LIMIT - used);
+      const allowed = used < GUEST_DAILY_LIMIT;
+      return { allowed, remaining };
+    }
+
     const monthStart = this.getMonthStart();
 
     const result = await (this.prisma as any).usageLog.aggregate({

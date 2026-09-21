@@ -1,38 +1,39 @@
-{
-  "name": "@fileconverter/conversion-orchestrator",
-  "version": "1.0.0",
-  "description": "Conversion Orchestrator Service for FileConverter Pro - job management and routing",
-  "main": "dist/server.js",
-  "scripts": {
-    "build": "tsc",
-    "start": "node dist/server.js",
-    "dev": "ts-node src/server.ts",
-    "test": "jest --runInBand --forceExit",
-    "test:properties": "jest --testPathPattern=property --runInBand",
-    "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
-  },
-  "dependencies": {
-    "@prisma/client": "^5.9.1",
-    "fastify": "^4.26.2",
-    "fastify-plugin": "^4.5.1",
-    "ioredis": "^5.3.2",
-    "jsonwebtoken": "^9.0.2",
-    "prom-client": "^15.1.0",
-    "uuid": "^9.0.1",
-    "zod": "^3.22.4"
-  },
-  "devDependencies": {
-    "@types/jest": "^29.5.12",
-    "@types/jsonwebtoken": "^9.0.5",
-    "@types/node": "^20.0.0",
-    "@types/supertest": "^6.0.2",
-    "@types/uuid": "^9.0.7",
-    "fast-check": "^3.15.0",
-    "jest": "^29.7.0",
-    "supertest": "^6.3.4",
-    "ts-jest": "^29.1.2",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.3.0"
-  }
+﻿{
+    "name":  "@fileconverter/conversion-orchestrator",
+    "version":  "1.0.0",
+    "description":  "Conversion Orchestrator Service for FileConverter Pro - job management and routing",
+    "main":  "dist/server.js",
+    "scripts":  {
+                    "build":  "tsc",
+                    "start":  "node dist/server.js",
+                    "dev":  "ts-node src/server.ts",
+                    "test":  "jest --runInBand --forceExit",
+                    "test:properties":  "jest --testPathPattern=property --runInBand",
+                    "typecheck":  "tsc --noEmit",
+                    "clean":  "rm -rf dist"
+                },
+    "dependencies":  {
+                         "@prisma/client":  "^5.9.1",
+                         "fastify":  "^4.26.2",
+                         "fastify-plugin":  "^4.5.1",
+                         "ioredis":  "^5.3.2",
+                         "jsonwebtoken":  "^9.0.2",
+                         "prom-client":  "^15.1.0",
+                         "uuid":  "^9.0.1",
+                         "zod":  "^3.22.4"
+                     },
+    "devDependencies":  {
+                            "@types/jest":  "^29.5.12",
+                            "@types/jsonwebtoken":  "^9.0.5",
+                            "@types/node":  "^20.0.0",
+                            "@types/supertest":  "^6.0.2",
+                            "@types/uuid":  "^9.0.7",
+                            "fast-check":  "^3.15.0",
+                            "jest":  "^29.7.0",
+                            "supertest":  "^6.3.4",
+                            "ts-jest":  "^29.1.2",
+                            "ts-node":  "^10.9.2",
+                            "typescript":  "^5.3.0",
+                            "prisma":  "^5.22.0"
+                        }
 }
