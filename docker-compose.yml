@@ -139,30 +139,7 @@ services:
     restart: on-failure
 
   # ═══════════════════════════════════════════════════════════
-  # FRONTEND
-  # ═══════════════════════════════════════════════════════════
-
-  frontend:
-    build:
-      context: ../
-      dockerfile: Dockerfile
-    container_name: fc_frontend
-    restart: unless-stopped
-    ports:
-      - "8080:80"
-    depends_on:
-      - api-gateway
-    networks:
-      - fileconverter-net
-    healthcheck:
-      test: ["CMD", "curl", "-fs", "http://127.0.0.1/healthz"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
-  # ═══════════════════════════════════════════════════════════
-  # API GATEWAY
+  # API GATEWAY (Single Entrypoint for all Backend Traffic)
   # ═══════════════════════════════════════════════════════════
 
   api-gateway:
@@ -191,7 +168,7 @@ services:
       start_period: 10s
 
   # ═══════════════════════════════════════════════════════════
-  # BACKEND SERVICES
+  # BACKEND SERVICES (Internal to fileconverter-net, no host port clutter)
   # ═══════════════════════════════════════════════════════════
 
   auth-service:
@@ -200,8 +177,6 @@ services:
       dockerfile: ./services/auth-service/Dockerfile
     container_name: fc_auth_service
     restart: unless-stopped
-    ports:
-      - "${AUTH_SERVICE_PORT:-3000}:3000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -230,8 +205,6 @@ services:
       dockerfile: ./services/user-service/Dockerfile
     container_name: fc_user_service
     restart: unless-stopped
-    ports:
-      - "${USER_SERVICE_PORT:-3001}:3001"
     depends_on:
       postgres:
         condition: service_healthy
@@ -260,8 +233,6 @@ services:
       dockerfile: ./services/upload-service/Dockerfile
     container_name: fc_upload_service
     restart: unless-stopped
-    ports:
-      - "${UPLOAD_SERVICE_PORT:-3002}:3002"
     depends_on:
       postgres:
         condition: service_healthy
@@ -277,6 +248,7 @@ services:
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       PORT: 3002
+      GUEST_DAILY_LIMIT: 1000
       DATABASE_URL: postgresql://${POSTGRES_USER:-fileconverter}:${POSTGRES_PASSWORD:-fileconverter_dev}@postgres:5432/${POSTGRES_DB:-fileconverter}
       REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_password}@redis:6379
       S3_ENDPOINT: http://minio:9000
@@ -295,8 +267,6 @@ services:
       dockerfile: ./services/conversion-orchestrator/Dockerfile
     container_name: fc_orchestrator_service
     restart: unless-stopped
-    ports:
-      - "${ORCHESTRATOR_SERVICE_PORT:-3003}:3003"
     depends_on:
       postgres:
         condition: service_healthy
@@ -310,6 +280,7 @@ services:
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       PORT: 3003
+      GUEST_DAILY_LIMIT: 1000
       DATABASE_URL: postgresql://${POSTGRES_USER:-fileconverter}:${POSTGRES_PASSWORD:-fileconverter_dev}@postgres:5432/${POSTGRES_DB:-fileconverter}
       REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_password}@redis:6379
     healthcheck:
@@ -325,8 +296,6 @@ services:
       dockerfile: ./services/billing-service/Dockerfile
     container_name: fc_billing_service
     restart: unless-stopped
-    ports:
-      - "${BILLING_SERVICE_PORT:-3004}:3004"
     depends_on:
       postgres:
         condition: service_healthy
@@ -352,8 +321,6 @@ services:
       dockerfile: ./services/notification-service/Dockerfile
     container_name: fc_notification_service
     restart: unless-stopped
-    ports:
-      - "${NOTIFICATION_SERVICE_PORT:-3005}:3005"
     depends_on:
       postgres:
         condition: service_healthy
@@ -384,8 +351,6 @@ services:
       dockerfile: ./services/admin-service/Dockerfile
     container_name: fc_admin_service
     restart: unless-stopped
-    ports:
-      - "${ADMIN_SERVICE_PORT:-3006}:3006"
     depends_on:
       postgres:
         condition: service_healthy

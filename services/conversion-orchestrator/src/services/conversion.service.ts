@@ -447,7 +447,7 @@ export class ConversionService {
       const redisKey = `guest_conversions:${userId}:${today}`;
       const usedStr = await this.redis.get(redisKey);
       const used = usedStr ? parseInt(usedStr, 10) : 0;
-      const GUEST_DAILY_LIMIT = 5;
+      const GUEST_DAILY_LIMIT = parseInt(process.env.GUEST_DAILY_LIMIT || '1000', 10);
       const remaining = Math.max(0, GUEST_DAILY_LIMIT - used);
       const allowed = used < GUEST_DAILY_LIMIT;
       return { allowed, remaining };

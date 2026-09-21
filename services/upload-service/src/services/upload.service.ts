@@ -137,8 +137,8 @@ export class UploadService {
       },
     });
 
-    // Enforce Guest Mode daily limit (20 free uploads/day)
-    const guestLimit = parseInt(process.env.GUEST_DAILY_LIMIT || '20', 10);
+    // Enforce Guest Mode daily limit (default 1000 free uploads/day)
+    const guestLimit = parseInt(process.env.GUEST_DAILY_LIMIT || '1000', 10);
     if (userTier === 'guest' || userId.startsWith('guest_')) {
       const today = new Date().toISOString().slice(0, 10);
       const redisKey = `guest_daily_uploads:${userId}:${today}`;
