@@ -1,187 +1,102 @@
-# FileConverter Pro – Backend Microservices
+# ⚙️ FileConverter Pro — Backend Microservices Architecture
 
-A Dockerized microservices architecture for FileConverter Pro, supporting 2,000+ file conversion types across 12 format categories.
+A resilient, scalable Dockerized microservices architecture supporting **2,021 file conversion pairs** across 11 format categories.
 
-## Architecture Overview
+---
 
-```
+## 📐 Microservices Architecture
+
+```text
 backend/
-├── services/          # TypeScript/Node.js API services (Fastify)
-│   ├── api-gateway/       # Nginx – single entry point, routing, rate limiting
-│   ├── auth-service/      # JWT/OAuth authentication (port 3000)
-│   ├── user-service/      # User profiles and quota management (port 3001)
-│   ├── upload-service/    # File uploads and virus scanning (port 3002)
-│   ├── orchestrator-service/ # Conversion job orchestration (port 3003)
-│   ├── billing-service/   # Stripe billing integration (port 3004)
-│   ├── notification-service/ # Webhooks and email (port 3005)
-│   └── admin-service/     # Admin dashboards (port 3006)
-├── workers/           # Python 3.11 conversion workers
-│   ├── image-worker/      # JPG, PNG, WEBP, TIFF, SVG, RAW (ImageMagick/Pillow)
-│   ├── video-worker/      # MP4, AVI, MOV, MKV, WEBM (FFmpeg)
-│   ├── audio-worker/      # MP3, WAV, FLAC, AAC, OGG (FFmpeg)
-│   ├── document-worker/   # PDF, DOCX, ODT, HTML, MD (LibreOffice/Pandoc)
-│   ├── archive-worker/    # ZIP, RAR, 7Z, TAR (7zip/unar)
-│   └── cad-worker/        # DWG/DXF + TTF/OTF/WOFF fonts (FreeCAD/FontForge)
-├── packages/          # Shared npm packages (monorepo)
-│   ├── types/             # @fileconverter/types – shared TypeScript interfaces
-│   ├── utils/             # @fileconverter/utils – JWT, logging, error helpers
-│   └── prisma/            # @fileconverter/prisma – Prisma schema and migrations
-├── infrastructure/    # Infrastructure configuration
-│   ├── nginx/             # API Gateway Nginx config
-│   ├── monitoring/        # Prometheus, Grafana, Loki configuration
-│   └── kubernetes/        # Kubernetes manifests (production)
-├── docker-compose.yml       # Development environment
-├── docker-compose.prod.yml  # Production overrides (resource limits, replicas)
-├── .env.example             # Environment variable template
-├── Makefile                 # Developer command shortcuts
-└── package.json             # npm workspaces root
+├── services/                 # TypeScript / Node.js 20 Fastify Microservices
+│   ├── api-gateway/          # Nginx API Gateway (Port :80)
+│   ├── auth-service/         # JWT / OAuth Authentication (Port :3000)
+│   ├── user-service/         # User Profiles & Quotas (Port :3001)
+│   ├── upload-service/       # Uploads & Virus Scanning (Port :3002)
+│   ├── orchestrator-service/ # Conversion Job Orchestrator (Port :3003)
+│   ├── billing-service/      # Stripe Billing Integration (Port :3004)
+│   ├── notification-service/ # Webhooks & Email Notifications (Port :3005)
+│   └── admin-service/        # Admin Analytics API (Port :3006)
+├── workers/                  # Python 3.11 Conversion Workers
+│   ├── image-worker/         # ImageMagick, libvips, Pillow (JPG, PNG, WEBP, AVIF, RAW)
+│   ├── video-worker/         # FFmpeg (MP4, AVI, MOV, WEBM, MKV)
+│   ├── audio-worker/         # FFmpeg (MP3, WAV, FLAC, AAC, OGG)
+│   ├── document-worker/      # LibreOffice, Pandoc, pdf2image (DOCX, PDF, ODT, HTML, MD)
+│   ├── archive-worker/       # 7-Zip, unar (ZIP, RAR, 7Z, TAR, GZ)
+│   └── cad-font-worker/      # FreeCAD, FontForge (DWG, DXF, TTF, OTF, WOFF)
+└── infrastructure/           # Monitoring Stack (Grafana, Prometheus, Loki, Alertmanager)
 ```
 
-## Technology Stack
+---
 
-| Layer | Technology |
+## 🛠️ Technology Stack
+
+| Component | Technology |
 |---|---|
-| API Services | TypeScript / Node.js 20 / Fastify |
-| Workers | Python 3.11 / Pydantic |
-| Database | PostgreSQL 16 + Prisma ORM |
-| Job Queues | Redis 7 + BullMQ |
-| Object Storage | MinIO (local) / AWS S3 (production) |
-| API Gateway | Nginx |
-| Containerisation | Docker + Docker Compose |
-| Monitoring | Prometheus + Grafana + Loki |
+| **API Services** | TypeScript / Node.js 20 / Fastify |
+| **Workers** | Python 3.11 / FFmpeg / LibreOffice / ImageMagick |
+| **Database** | PostgreSQL 16 + Prisma ORM |
+| **Caching & Streams** | Redis 7 |
+| **Object Storage** | MinIO (local) / AWS S3 / Cloudflare R2 |
+| **API Gateway** | Nginx |
+| **Monitoring** | Grafana 10 + Prometheus + Loki |
 
-## Quick Start
+---
 
-### Prerequisites
+## 🎁 Guest Mode & Anonymous Conversions
 
-- Docker 24+ and Docker Compose v2
-- Node.js 20+ and npm 10+ (for local development without Docker)
-- GNU Make
+- **Automatic Session Resolution**: Requests lacking `Authorization: Bearer` tokens generate guest identities (`guest_<client_ip>`).
+- **20 Daily Conversions**: Anonymous users get **20 free file conversions per day** tracked via Redis (`guest_daily_uploads:<ip>:<date>`).
+- **PostgreSQL Auto-Upsert**: Ensures foreign key constraints pass seamlessly without forced registration.
 
-### 1. Configure environment
+---
+
+## 🚀 Local Development Setup
+
+### 1. Configure Environment Variables
 
 ```bash
+cd backend
 cp .env.example .env
-# Review and update .env values – defaults work for local development
 ```
 
-### 2. Start all services
+### 2. Start Stack in Docker
 
 ```bash
-make up
+docker compose up -d --build
 ```
 
-This builds all Docker images and starts:
-- **PostgreSQL** on port 5432
-- **Redis** on port 6379
-- **MinIO** on port 9000 (console: 9001)
-- **Mailhog** on port 8025 (email testing UI)
-- **ClamAV** on port 3310
-- All API services and conversion workers
-
-### 3. Run database migrations
+### 3. Apply Database Schema
 
 ```bash
-make migrate
+docker exec -it fc_upload_service ./node_modules/.bin/prisma db push --schema=./prisma/schema.prisma
 ```
 
-### 4. Seed development data
+### 4. Service Endpoints
 
-```bash
-make seed
-```
+| Service | Host Port | Purpose |
+|---|---|---|
+| **API Gateway** | `http://localhost:80` | Single entry point for all API routes (`/api/v1/*`) |
+| **MinIO Console** | `http://localhost:9001` | S3 Object Storage Management (`minioadmin` / `minioadmin_dev`) |
+| **Grafana Dashboards** | `http://localhost:3100` | Operational monitoring (`admin` / `admin`) |
+| **Prometheus** | `http://localhost:9090` | Service metrics collection |
+| **MailHog Web UI** | `http://localhost:8025` | Development email inbox |
 
-### 5. Access services
+---
 
-| Service | URL |
-|---|---|
-| API Gateway | http://localhost |
-| MinIO Console | http://localhost:9001 |
-| Mailhog UI | http://localhost:8025 |
-| Auth Service | http://localhost:3000 |
-| User Service | http://localhost:3001 |
-| Upload Service | http://localhost:3002 |
-| Orchestrator | http://localhost:3003 |
+## ☁️ Cloud Deployment
 
-## Common Commands
+The backend services are designed for deployment on free cloud providers:
+- **Database**: Supabase PostgreSQL (Free 500MB tier)
+- **Redis**: Upstash Redis (10,000 req/day free)
+- **S3 Storage**: Cloudflare R2 (10 GB free storage/month)
+- **Services**: Render Docker Web Services
 
-```bash
-make up            # Start all services
-make down          # Stop all services
-make logs          # Tail all logs
-make migrate       # Apply database migrations
-make seed          # Seed development data
-make test          # Run all tests
-make typecheck     # TypeScript type check
-make lint          # Run ESLint
-make clean         # Remove containers and volumes (destructive)
-make help          # Show all available commands
-```
+For complete step-by-step cloud deployment instructions, see [`DEPLOYMENT.md`](../DEPLOYMENT.md).
 
-## Development
+---
 
-### Running a single service locally (without Docker)
+## 📚 Related Repositories
 
-```bash
-cd services/auth-service
-npm install
-npm run dev
-```
-
-Requires PostgreSQL and Redis running locally or via `make infra-up`.
-
-### Logs for a specific service
-
-```bash
-make logs-service SERVICE=auth-service
-```
-
-### Open a shell in a container
-
-```bash
-make shell SERVICE=auth-service
-```
-
-### Prisma Studio (database GUI)
-
-```bash
-make prisma-studio
-# Opens on http://localhost:5555
-```
-
-## Environment Variables
-
-All configuration is managed through environment variables. See [.env.example](.env.example) for the full list with documentation.
-
-Required in production (no defaults):
-- `DATABASE_URL` / `POSTGRES_PASSWORD`
-- `REDIS_PASSWORD`
-- `S3_SECRET_ACCESS_KEY`
-- `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET`
-- `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET`
-- `SMTP_PASSWORD` (or `SENDGRID_API_KEY`)
-
-## Production Deployment
-
-```bash
-# Copy and update production environment
-cp .env.example .env
-# ... fill in production values
-
-# Start with production resource limits and replica counts
-make up-prod
-```
-
-The production compose file (`docker-compose.prod.yml`) adds:
-- CPU and memory resource limits per service
-- Multiple replicas for stateless services
-- Stricter health check thresholds
-- Rolling update and rollback configuration
-- JSON log driver with rotation
-
-## Contributing
-
-1. Run `make infra-up` to start just the infrastructure services
-2. Develop services locally with hot-reload
-3. Run `make test` before committing
-4. Ensure `make typecheck` and `make lint` pass
+- 🌐 **Frontend Web Application**: [hamdiouni/fileconverter-frontend](https://github.com/hamdiouni/fileconverter-frontend)
+- ⚙️ **Backend Microservices**: [hamdiouni/fileconverter-backend](https://github.com/hamdiouni/fileconverter-backend)
