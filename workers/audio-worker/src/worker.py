@@ -1,22 +1,48 @@
-"""Audio worker entry point skeleton."""
+"""
+Audio worker — consumes from bull:fc:queue:audio:wait and converts audio files
+using ffmpeg via subprocess.
+"""
 from __future__ import annotations
+
+import json
+import os
 import signal
+import subprocess
+import tempfile
 import threading
 import time
+import urllib.request
+import urllib.error
+import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Any
 
+import redis as redis_lib
 import structlog
+import boto3
 
 log = structlog.get_logger()
 _shutdown = False
 
+REDIS_URL             = os.environ.get("REDIS_URL", "redis://localhost:6379")
+S3_ENDPOINT           = os.environ.get("S3_ENDPOINT", "http://localhost:9000")
+AWS_ACCESS_KEY_ID     = os.environ.get("AWS_ACCESS_KEY_ID", "minioadmin")
+AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", "minioadmin_dev")
+WORKER_ID             = f"audio-worker-{os.getpid()}"
+QUEUE_KEY             = "bull:fc:queue:audio:wait"
 
-# ── Health HTTP server (required by Docker HEALTHCHECK) ───────────────────────
+AUDIO_FORMAT_MIME = {
+    "mp3": "audio/mpeg", "wav": "audio/wav", "flac": "audio/flac",
+    "aac": "audio/aac", "ogg": "audio/ogg", "m4a": "audio/mp4",
+}
+
+
+# ── Health server ─────────────────────────────────────────────────────────────
 
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
-            body = b'{"status":"ok"}'
+            body = b'{"status":"ok","service":"audio-worker"}'
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -25,37 +51,144 @@ class _HealthHandler(BaseHTTPRequestHandler):
         else:
             self.send_response(404)
             self.end_headers()
+    def log_message(self, *args): pass
 
-    def log_message(self, *args):
-        pass
-
-
-def _start_health_server(port: int = 9090):
+def _start_health_server(port=9090):
     server = HTTPServer(("0.0.0.0", port), _HealthHandler)
-    t = threading.Thread(target=server.serve_forever, daemon=True)
-    t.start()
-    return server
+    threading.Thread(target=server.serve_forever, daemon=True).start()
 
 
-# ── Shutdown handler ──────────────────────────────────────────────────────────
+# ── Shutdown ──────────────────────────────────────────────────────────────────
 
 def handle_shutdown(signum, frame):
     global _shutdown
     _shutdown = True
-    log.info("shutdown_signal_received", signal=signum)
-
 
 signal.signal(signal.SIGTERM, handle_shutdown)
 signal.signal(signal.SIGINT, handle_shutdown)
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def make_redis():
+    import urllib.parse
+    p = urllib.parse.urlparse(REDIS_URL)
+    for attempt in range(10):
+        try:
+            c = redis_lib.Redis(host=p.hostname or "localhost", port=p.port or 6379,
+                                db=int((p.path or "/0").lstrip("/") or "0"),
+                                password=p.password or None, decode_responses=True,
+                                socket_connect_timeout=5, socket_timeout=30)
+            c.ping(); return c
+        except Exception as exc:
+            log.warning("redis_retry", attempt=attempt+1, error=str(exc))
+            time.sleep(2 ** min(attempt, 4))
+    raise RuntimeError("Redis connection failed")
+
+def make_s3(bucket):
+    return boto3.client("s3", endpoint_url=S3_ENDPOINT,
+                        aws_access_key_id=AWS_ACCESS_KEY_ID,
+                        aws_secret_access_key=AWS_SECRET_ACCESS_KEY)
+
+def post_status(url, payload):
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers={"Content-Type": "application/json"})
+    for i in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=10): return
+        except urllib.error.URLError as e:
+            time.sleep(2 ** i)
+
+def s3_download(s3, bucket, key):
+    resp = s3.get_object(Bucket=bucket, Key=key)
+    return resp["Body"].read()
+
+def s3_upload(s3, bucket, key, data, mime):
+    s3.put_object(Bucket=bucket, Key=key, Body=data, ContentType=mime)
+
+
+# ── Processing ────────────────────────────────────────────────────────────────
+
+def process_job(job_data: dict[str, Any]) -> None:
+    job_id     = job_data["jobId"]
+    source_id  = job_data["sourceFileId"]
+    src_fmt    = job_data.get("sourceFormat", "mp3")
+    tgt_fmt    = job_data["targetFormat"]
+    src_bucket = job_data.get("sourceBucket", "fileconverter-uploads")
+    res_bucket = job_data.get("resultBucket", "fileconverter-results")
+    callback   = job_data["callbackUrl"]
+
+    logger = log.bind(job_id=job_id, target=tgt_fmt)
+    logger.info("audio_job_started")
+
+    post_status(callback, {"status": "processing", "progress": 10, "workerId": WORKER_ID})
+
+    s3 = make_s3(src_bucket)
+    try:
+        audio_bytes = s3_download(s3, src_bucket, source_id)
+        post_status(callback, {"status": "processing", "progress": 30, "workerId": WORKER_ID})
+
+        with tempfile.NamedTemporaryFile(suffix=f".{src_fmt}", delete=False) as inf, \
+             tempfile.NamedTemporaryFile(suffix=f".{tgt_fmt}", delete=False) as outf:
+            inf_path, outf_path = inf.name, outf.name
+            inf.write(audio_bytes)
+
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-y", "-i", inf_path, outf_path],
+                capture_output=True, timeout=300
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"ffmpeg failed: {result.stderr.decode()[:500]}")
+
+            with open(outf_path, "rb") as f:
+                out_bytes = f.read()
+        finally:
+            os.unlink(inf_path)
+            try: os.unlink(outf_path)
+            except: pass
+
+        post_status(callback, {"status": "processing", "progress": 80, "workerId": WORKER_ID})
+
+        result_key = f"results/{job_id}/{uuid.uuid4()}.{tgt_fmt}"
+        mime = AUDIO_FORMAT_MIME.get(tgt_fmt, "audio/mpeg")
+        s3_upload(s3, res_bucket, result_key, out_bytes, mime)
+
+        post_status(callback, {"status": "completed", "progress": 100,
+                                "resultFileId": result_key, "workerId": WORKER_ID})
+        logger.info("audio_job_completed", result_key=result_key)
+
+    except Exception as exc:
+        logger.error("audio_job_failed", error=str(exc))
+        post_status(callback, {"status": "failed", "errorMessage": str(exc), "workerId": WORKER_ID})
+
+
+# ── Consumer loop ─────────────────────────────────────────────────────────────
+
+def run_consumer(redis_client):
+    log.info("consumer_started", queue=QUEUE_KEY)
+    while not _shutdown:
+        try:
+            result = redis_client.brpop(QUEUE_KEY, timeout=5)
+            if result is None: continue
+            _, raw = result
+            try:
+                envelope = json.loads(raw)
+                process_job(envelope.get("data", {}))
+            except json.JSONDecodeError as e:
+                log.error("envelope_parse_error", error=str(e))
+        except redis_lib.exceptions.ConnectionError as e:
+            log.error("redis_lost", error=str(e)); time.sleep(5)
+        except Exception as e:
+            log.error("consumer_error", error=str(e)); time.sleep(1)
+    log.info("consumer_stopped")
+
 
 if __name__ == "__main__":
-    log.info("worker_started", service="audio-worker")
+    log.info("worker_started", service="audio-worker", pid=os.getpid())
     _start_health_server(9090)
     log.info("health_server_started", port=9090)
-
-    while not _shutdown:
-        time.sleep(1)
-
+    redis_client = make_redis()
+    run_consumer(redis_client)
     log.info("worker_stopped", service="audio-worker")

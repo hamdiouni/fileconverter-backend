@@ -4,6 +4,7 @@ import type { PrismaClient } from '@prisma/client';
 import fp from 'fastify-plugin';
 import metricsPlugin from '../../plugins/metrics';
 import { userRoutes } from '../../routes/user.routes';
+import { webhookRoutes } from '../../routes/webhook.routes';
 import { InMemoryPrismaClient } from '../mocks/prisma.mock';
 import { InMemoryRedis } from '../mocks/redis.mock';
 import { setPrismaClient } from '../../plugins/prisma';
@@ -45,6 +46,7 @@ export async function buildTestApp(): Promise<TestApp> {
 
   await fastify.register(metricsPlugin);
   await fastify.register(userRoutes);
+  await fastify.register(webhookRoutes);
 
   fastify.get('/health', async () => ({ status: 'ok', service: 'user-service' }));
 

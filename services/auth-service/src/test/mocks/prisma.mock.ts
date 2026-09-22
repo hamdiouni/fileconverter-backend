@@ -165,6 +165,22 @@ export class InMemoryPrismaClient {
     },
   };
 
+  userProfiles: Map<string, any> = new Map();
+
+  userProfile = {
+    upsert: async ({ where, update, create }: { where: { userId: string }; update: any; create: any }) => {
+      const existing = this.userProfiles.get(where.userId);
+      if (existing) {
+        const updated = { ...existing, ...update, updatedAt: new Date() };
+        this.userProfiles.set(where.userId, updated);
+        return updated;
+      }
+      const created = { ...create, createdAt: new Date(), updatedAt: new Date() };
+      this.userProfiles.set(where.userId, created);
+      return created;
+    },
+  };
+
   $disconnect = async () => {};
   $connect = async () => {};
 
@@ -173,5 +189,6 @@ export class InMemoryPrismaClient {
     this.users.clear();
     this.refreshTokens.clear();
     this.apiKeys.clear();
+    this.userProfiles.clear();
   }
 }

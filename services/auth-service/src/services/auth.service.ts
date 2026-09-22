@@ -271,6 +271,65 @@ export class AuthService {
     return providerUrls[provider] ?? providerUrls['google']!;
   }
 
+  /**
+   * Find-or-create a user from a verified Google profile and issue FileConverter JWTs.
+   * Called by the Next.js callback route after it has already exchanged the Google
+   * authorization code and fetched the Google user-info profile.
+   */
+  async handleGoogleLogin(
+    googleId: string,
+    email: string,
+    name: string | null,
+    avatarUrl: string | null,
+  ): Promise<RegisterResult> {
+    // 1. Look up existing user by google oauth ID
+    let user = await (this.prisma as any).user.findFirst({
+      where: { oauthProvider: 'google', oauthId: googleId },
+    });
+
+    if (!user) {
+      // 2. Check if there is already an account with this email (link it)
+      const existing = await (this.prisma as any).user.findUnique({ where: { email } });
+      if (existing) {
+        user = await (this.prisma as any).user.update({
+          where: { id: existing.id },
+          data: { oauthProvider: 'google', oauthId: googleId },
+        });
+      } else {
+        // 3. Create a brand-new user
+        user = await (this.prisma as any).user.create({
+          data: { email, oauthProvider: 'google', oauthId: googleId },
+        });
+      }
+
+      // Upsert profile (name + avatar)
+      await (this.prisma as any).userProfile.upsert({
+        where: { userId: user.id },
+        update: { name: name ?? undefined, avatarUrl: avatarUrl ?? undefined },
+        create: { userId: user.id, name: name ?? null, avatarUrl: avatarUrl ?? null },
+      });
+    }
+
+    // 4. Issue FileConverter JWT pair (same as email/password login path)
+    const tokens = this.generateTokens(user.id, user.email);
+
+    await (this.prisma as any).refreshToken.create({
+      data: {
+        userId: user.id,
+        tokenHash: this.hashToken(tokens.refreshToken),
+        expiresAt: this.getRefreshTokenExpiry(),
+      },
+    });
+
+    await this.redis.setex(
+      `session:${user.id}`,
+      15 * 60,
+      JSON.stringify({ email: user.email, tier: user.tier ?? 'free', permissions: [] }),
+    );
+
+    return { ...tokens, user: { id: user.id, email: user.email } };
+  }
+
   async handleOAuthCallback(
     provider: string,
     code: string,

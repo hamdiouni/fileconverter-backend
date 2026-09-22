@@ -101,6 +101,67 @@ export class InMemoryPrismaClient {
     },
   };
 
+  webhookEndpoints: Map<string, any> = new Map();
+  webhookDeliveries: Map<string, any> = new Map();
+
+  webhookEndpoint = {
+    findMany: async ({ where, orderBy }: { where?: { userId?: string }; orderBy?: any }) => {
+      let results: any[] = [];
+      for (const ep of this.webhookEndpoints.values()) {
+        if (!where?.userId || ep.userId === where.userId) {
+          results.push(ep);
+        }
+      }
+      if (orderBy?.createdAt === 'desc') {
+        results.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      }
+      return results;
+    },
+    findFirst: async ({ where }: { where: { id?: string; userId?: string } }) => {
+      for (const ep of this.webhookEndpoints.values()) {
+        let match = true;
+        if (where.id && ep.id !== where.id) match = false;
+        if (where.userId && ep.userId !== where.userId) match = false;
+        if (match) return ep;
+      }
+      return null;
+    },
+    create: async ({ data }: { data: any }) => {
+      const ep = {
+        id: uuidv4(),
+        userId: data.userId,
+        url: data.url,
+        secret: data.secret,
+        events: data.events,
+        active: data.active ?? true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      this.webhookEndpoints.set(ep.id, ep);
+      return ep;
+    },
+    delete: async ({ where }: { where: { id: string } }) => {
+      const ep = this.webhookEndpoints.get(where.id);
+      this.webhookEndpoints.delete(where.id);
+      return ep;
+    },
+  };
+
+  webhookDelivery = {
+    findFirst: async ({ where, orderBy }: { where?: { webhookUrl?: string }; orderBy?: any }) => {
+      let matches: any[] = [];
+      for (const d of this.webhookDeliveries.values()) {
+        if (!where?.webhookUrl || d.webhookUrl === where.webhookUrl) {
+          matches.push(d);
+        }
+      }
+      if (orderBy?.createdAt === 'desc') {
+        matches.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      }
+      return matches[0] ?? null;
+    },
+  };
+
   $disconnect = async () => {};
   $connect = async () => {};
 
@@ -109,6 +170,8 @@ export class InMemoryPrismaClient {
     this.userProfiles.clear();
     this.subscriptions.clear();
     this.usageLogs.clear();
+    this.webhookEndpoints.clear();
+    this.webhookDeliveries.clear();
   }
 
   /** Seed a default test user */

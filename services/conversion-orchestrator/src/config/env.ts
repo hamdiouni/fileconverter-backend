@@ -6,6 +6,14 @@ const envSchema = z.object({
   JWT_ACCESS_SECRET: z.string().min(32, 'JWT_ACCESS_SECRET must be at least 32 characters'),
   DATABASE_URL: z.string().url('DATABASE_URL must be a valid URL'),
   REDIS_URL: z.string().default('redis://localhost:6379'),
+  /** Internal URL of the notification-service — used to trigger webhook delivery */
+  NOTIFICATION_SERVICE_URL: z.string().url().default('http://notification-service:3005'),
+  /** MinIO bucket where uploaded source files are stored */
+  S3_BUCKET_UPLOADS: z.string().default('fileconverter-uploads'),
+  /** MinIO bucket where converted result files should be stored */
+  S3_BUCKET_RESULTS: z.string().default('fileconverter-results'),
+  /** Orchestrator's own internal base URL — sent to workers as the callback address */
+  ORCHESTRATOR_INTERNAL_URL: z.string().url().default('http://orchestrator-service:3003'),
 });
 
 export type Env = z.infer<typeof envSchema>;

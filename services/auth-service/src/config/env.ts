@@ -9,8 +9,16 @@ const envSchema = z.object({
   JWT_REFRESH_EXPIRY: z.string().default('7d'),
   DATABASE_URL: z.string().url('DATABASE_URL must be a valid URL'),
   REDIS_URL: z.string().default('redis://localhost:6379'),
-  OAUTH_GOOGLE_CLIENT_ID: z.string().optional(),
-  OAUTH_GOOGLE_CLIENT_SECRET: z.string().optional(),
+  // Google OAuth credentials — required for the /internal/auth/google endpoint.
+  // In test environments these may be overridden to dummy values.
+  OAUTH_GOOGLE_CLIENT_ID: z
+    .string()
+    .min(1, 'OAUTH_GOOGLE_CLIENT_ID is required for Google OAuth')
+    .default(''),
+  OAUTH_GOOGLE_CLIENT_SECRET: z
+    .string()
+    .min(1, 'OAUTH_GOOGLE_CLIENT_SECRET is required for Google OAuth')
+    .default(''),
   OAUTH_GITHUB_CLIENT_ID: z.string().optional(),
   OAUTH_GITHUB_CLIENT_SECRET: z.string().optional(),
   FRONTEND_URL: z.string().default('http://localhost:3000'),

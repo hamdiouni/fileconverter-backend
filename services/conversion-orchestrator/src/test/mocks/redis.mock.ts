@@ -31,6 +31,34 @@ export class InMemoryRedis {
     return existed ? 1 : 0;
   }
 
+  private lists: Map<string, string[]> = new Map();
+
+  async lpush(key: string, ...values: string[]): Promise<number> {
+    const list = this.lists.get(key) ?? [];
+    for (const v of values) {
+      list.unshift(v);
+    }
+    this.lists.set(key, list);
+    return list.length;
+  }
+
+  async rpop(key: string): Promise<string | null> {
+    const list = this.lists.get(key);
+    if (!list || list.length === 0) return null;
+    return list.pop() ?? null;
+  }
+
+  async lrange(key: string, start: number, stop: number): Promise<string[]> {
+    const list = this.lists.get(key) ?? [];
+    if (stop === -1) return list.slice(start);
+    return list.slice(start, stop + 1);
+  }
+
+  async llen(key: string): Promise<number> {
+    const list = this.lists.get(key) ?? [];
+    return list.length;
+  }
+
   async quit(): Promise<'OK'> {
     return 'OK';
   }
@@ -38,5 +66,6 @@ export class InMemoryRedis {
   /** Reset all data (call between tests) */
   reset() {
     this.store.clear();
+    this.lists.clear();
   }
 }

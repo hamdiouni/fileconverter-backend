@@ -4,6 +4,7 @@ import type { PrismaClient } from '@prisma/client';
 import fp from 'fastify-plugin';
 import metricsPlugin from '../../plugins/metrics';
 import { conversionRoutes } from '../../routes/conversion.routes';
+import { internalConversionRoutes } from '../../routes/internal.routes';
 import { InMemoryPrismaClient } from '../mocks/prisma.mock';
 import { InMemoryRedis } from '../mocks/redis.mock';
 import { setPrismaClient } from '../../plugins/prisma';
@@ -52,6 +53,7 @@ export async function buildTestApp(): Promise<TestApp> {
 
   // Register routes
   await fastify.register(conversionRoutes);
+  await fastify.register(internalConversionRoutes);
 
   // Health check
   fastify.get('/health', async () => ({ status: 'ok', service: 'conversion-orchestrator' }));

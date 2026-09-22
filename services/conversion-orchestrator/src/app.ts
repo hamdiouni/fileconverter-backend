@@ -3,6 +3,7 @@ import prismaPlugin from './plugins/prisma';
 import redisPlugin from './plugins/redis';
 import metricsPlugin from './plugins/metrics';
 import { conversionRoutes } from './routes/conversion.routes';
+import { internalConversionRoutes } from './routes/internal.routes';
 
 export async function buildApp(options?: { logger?: boolean }): Promise<FastifyInstance> {
   const fastify = Fastify({ logger: options?.logger ?? false });
@@ -11,6 +12,7 @@ export async function buildApp(options?: { logger?: boolean }): Promise<FastifyI
   await fastify.register(redisPlugin);
   await fastify.register(metricsPlugin);
   await fastify.register(conversionRoutes);
+  await fastify.register(internalConversionRoutes);
 
   fastify.get('/health', async () => ({ status: 'ok', service: 'conversion-orchestrator' }));
 

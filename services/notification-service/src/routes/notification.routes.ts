@@ -13,6 +13,12 @@ export async function notificationRoutes(fastify: FastifyInstance) {
     controller.sendWebhook,
   );
 
+  // Internal service-to-service route (called by orchestrator on job completion)
+  fastify.post(
+    '/internal/notifications/webhooks/send',
+    controller.sendWebhook,
+  );
+
   fastify.post(
     '/api/v1/notifications/emails/send',
     { preHandler: authenticate },

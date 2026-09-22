@@ -221,6 +221,8 @@ services:
       PORT: 3000
       DATABASE_URL: postgresql://${POSTGRES_USER:-fileconverter}:${POSTGRES_PASSWORD:-fileconverter_dev}@postgres:5432/${POSTGRES_DB:-fileconverter}
       REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_password}@redis:6379
+      OAUTH_GOOGLE_CLIENT_ID: ${OAUTH_GOOGLE_CLIENT_ID:-}
+      OAUTH_GOOGLE_CLIENT_SECRET: ${OAUTH_GOOGLE_CLIENT_SECRET:-}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
       interval: 10s
@@ -312,6 +314,10 @@ services:
       GUEST_DAILY_LIMIT: 1000
       DATABASE_URL: postgresql://${POSTGRES_USER:-fileconverter}:${POSTGRES_PASSWORD:-fileconverter_dev}@postgres:5432/${POSTGRES_DB:-fileconverter}
       REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_password}@redis:6379
+      NOTIFICATION_SERVICE_URL: http://notification-service:3005
+      S3_BUCKET_UPLOADS: ${S3_BUCKET_UPLOADS:-fileconverter-uploads}
+      S3_BUCKET_RESULTS: ${S3_BUCKET_RESULTS:-fileconverter-results}
+      ORCHESTRATOR_INTERNAL_URL: http://orchestrator-service:3003
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3003/health"]
       interval: 10s
@@ -367,6 +373,7 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_password}@redis:6379
       SMTP_HOST: mailhog
       SMTP_PORT: 1025
+      WEBHOOK_HMAC_SECRET: ${WEBHOOK_HMAC_SECRET:-dev_webhook_hmac_secret_32chars_long!}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3005/health"]
       interval: 10s

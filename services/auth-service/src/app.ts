@@ -3,6 +3,7 @@ import redisPlugin from './plugins/redis';
 import prismaPlugin from './plugins/prisma';
 import metricsPlugin from './plugins/metrics';
 import { authRoutes } from './routes/auth.routes';
+import { internalRoutes } from './routes/internal.routes';
 
 export async function buildApp(options?: { logger?: boolean }): Promise<FastifyInstance> {
   const fastify = Fastify({
@@ -16,6 +17,7 @@ export async function buildApp(options?: { logger?: boolean }): Promise<FastifyI
 
   // Register routes
   await fastify.register(authRoutes);
+  await fastify.register(internalRoutes);
 
   // Health check
   fastify.get('/health', async () => ({ status: 'ok', service: 'auth-service' }));

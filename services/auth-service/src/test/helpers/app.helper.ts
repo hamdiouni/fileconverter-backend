@@ -3,6 +3,7 @@ import type IORedis from 'ioredis';
 import type { PrismaClient } from '@prisma/client';
 import metricsPlugin from '../../plugins/metrics';
 import { authRoutes } from '../../routes/auth.routes';
+import { internalRoutes } from '../../routes/internal.routes';
 import { InMemoryPrismaClient } from '../mocks/prisma.mock';
 import { InMemoryRedis } from '../mocks/redis.mock';
 import { setPrismaClient } from '../../plugins/prisma';
@@ -52,6 +53,7 @@ export async function buildTestApp(): Promise<TestApp> {
 
   // Register routes
   await fastify.register(authRoutes);
+  await fastify.register(internalRoutes);
 
   // Health check
   fastify.get('/health', async () => ({ status: 'ok', service: 'auth-service' }));

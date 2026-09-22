@@ -1,6 +1,8 @@
 import type { PrismaClient } from '@prisma/client';
 import type IORedis from 'ioredis';
 import { v4 as uuidv4 } from 'uuid';
+import { QueueProducer, type FormatFamily as QueueFormatFamily } from '../queue/producer';
+import { getEnv } from '../config/env';
 
 export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled';
 export type FormatFamily = 'image' | 'video' | 'audio' | 'document' | 'archive' | 'cad' | 'font';
@@ -141,10 +143,14 @@ export function isValidConversion(sourceFormat: string, targetFormat: string): b
 }
 
 export class ConversionService {
+  private queueProducer: QueueProducer;
+
   constructor(
     private prisma: PrismaClient,
     private redis: IORedis,
-  ) {}
+  ) {
+    this.queueProducer = new QueueProducer(redis);
+  }
 
   /**
    * Submit a new conversion job.
@@ -255,33 +261,30 @@ export class ConversionService {
       },
     });
 
-    // Asynchronous background conversion execution
-    setTimeout(async () => {
-      try {
-        await (this.prisma as any).conversionJob.update({
-          where: { id: job.id },
-          data: {
-            status: 'processing',
-            startedAt: new Date(),
-            progress: 50,
-          },
-        });
-
-        setTimeout(async () => {
-          try {
-            await (this.prisma as any).conversionJob.update({
-              where: { id: job.id },
-              data: {
-                status: 'completed',
-                completedAt: new Date(),
-                progress: 100,
-                resultFileId: sourceFileId,
-              },
-            });
-          } catch {}
-        }, 1200);
-      } catch {}
-    }, 400);
+    // ── Dispatch to the appropriate Python worker via Redis queue ──────────────
+    const env = getEnv();
+    try {
+      await this.queueProducer.enqueue(formatFamily as QueueFormatFamily, {
+        jobId: job.id,
+        userId,
+        sourceFileId,
+        sourceFormat,
+        targetFormat: normalizedTarget,
+        options: options ?? {},
+        sourceBucket: env.S3_BUCKET_UPLOADS,
+        resultBucket: env.S3_BUCKET_RESULTS,
+        callbackUrl: `${env.ORCHESTRATOR_INTERNAL_URL}/internal/conversions/${job.id}/status`,
+        enqueuedAt: new Date().toISOString(),
+      });
+    } catch (queueErr) {
+      // If we fail to enqueue, mark the job failed immediately so the user gets
+      // an accurate status rather than a job stuck in 'queued' forever.
+      await (this.prisma as any).conversionJob.update({
+        where: { id: job.id },
+        data: { status: 'failed', errorMessage: 'Failed to dispatch job to worker queue' },
+      });
+      throw queueErr;
+    }
 
     return { job: job as ConversionJob };
   }

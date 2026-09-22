@@ -49,15 +49,19 @@ export class NotificationService {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         const response = await http.post(webhookUrl, body, {
-          headers: { 'Content-Type': 'application/json', 'X-Signature': `sha256=${signature}` },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-FileConverter-Signature': `sha256=${signature}`,
+            'X-Signature': `sha256=${signature}`,
+          },
           timeout: 10000,
         });
-        await this.recordDelivery(payload.jobId, webhookUrl, attempt, response.status, 'delivered');
+        await this.recordDelivery(payload.jobId, webhookUrl, attempt, response.status, 'delivered', payload);
         return { success: true, attempts: attempt, statusCode: response.status };
       } catch (err: any) {
         const statusCode = err.response?.status;
         if (attempt === maxRetries) {
-          await this.recordDelivery(payload.jobId, webhookUrl, attempt, statusCode, 'failed');
+          await this.recordDelivery(payload.jobId, webhookUrl, attempt, statusCode, 'failed', payload);
           return { success: false, attempts: attempt, statusCode };
         }
         // Exponential backoff (mocked in tests via jest.useFakeTimers)
@@ -109,13 +113,24 @@ export class NotificationService {
 
   private async recordDelivery(
     jobId: string,
-    url: string,
-    attempt: number,
+    webhookUrl: string,
+    retryCount: number,
     statusCode: number | undefined,
     status: string,
+    payload?: any,
   ): Promise<void> {
     await (this.prisma as any).webhookDelivery.create({
-      data: { jobId, url, attempt, statusCode: statusCode ?? 0, status, createdAt: new Date() },
+      data: {
+        jobId,
+        url: webhookUrl,
+        webhookUrl,
+        attempt: retryCount,
+        retryCount,
+        statusCode: statusCode ?? 0,
+        status,
+        payload: payload ?? {},
+        deliveredAt: (status === 'delivered' || status === 'success') ? new Date() : null,
+      },
     });
   }
 }
