@@ -179,12 +179,17 @@ services:
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-8080}:8080"
+    env_file: .env
     environment:
       - NODE_ENV=production
       - PORT=8080
       - NEXT_PUBLIC_API_URL=http://localhost:80/api/v1
       - NEXT_PUBLIC_S3_ENDPOINT=http://localhost:9000
       - NEXT_PUBLIC_SITE_URL=http://localhost:8080
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-466195313627-mf3t35danp4mqqq4d5vq8h6k2qdpclql.apps.googleusercontent.com}
+      - NEXT_PUBLIC_GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-466195313627-mf3t35danp4mqqq4d5vq8h6k2qdpclql.apps.googleusercontent.com}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-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}
+      - AUTH_SERVICE_INTERNAL_URL=http://auth-service:3000
     networks:
       - fileconverter-net
     depends_on:
