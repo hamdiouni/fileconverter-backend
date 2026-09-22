@@ -593,4 +593,56 @@ describe('Conversion Orchestrator Integration Tests', () => {
       expect(res.body.error.code).toBe('INVALID_FORMAT_PAIR');
     });
   });
+
+  // ─── API Key Authentication ───────────────────────────────────────────────
+  describe('API Key Authentication', () => {
+    it('should allow submitting conversion using X-API-Key', async () => {
+      const crypto = await import('crypto');
+      const rawKey = 'fc_live_orch_test_key_123';
+      const keyHash = crypto.createHash('sha256').update(rawKey).digest('hex');
+      prisma.seedApiKey('key-orch-1', 'user-api-orch', keyHash);
+
+      const res = await supertest(app.server)
+        .post('/api/v1/conversions')
+        .set('X-API-Key', rawKey)
+        .send({ sourceFileId: 'file-png-apikey', targetFormat: 'webp' });
+
+      expect(res.status).toBe(202);
+      expect(res.body.jobId).toBeDefined();
+    });
+
+    it('should reject invalid X-API-Key with 401', async () => {
+      const res = await supertest(app.server)
+        .post('/api/v1/conversions')
+        .set('X-API-Key', 'invalid_key_str')
+        .send({ sourceFileId: 'file-png-apikey', targetFormat: 'webp' });
+
+      expect(res.status).toBe(401);
+    });
+  });
+
+  // ─── Webhook Multi-Dispatch on Terminal State ─────────────────────────────
+  describe('Webhook Multi-Dispatch on Terminal State', () => {
+    it('should dispatch to user-registered WebhookEndpoints when job completes', async () => {
+      const fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async () => ({ ok: true } as any));
+
+      prisma.seedJob('job-webhook-test', 'user-webhook-owner', 'processing', 'png', 'jpg');
+      prisma.seedWebhookEndpoint('ep-owner-1', 'user-webhook-owner', 'https://example.com/user-webhook', ['conversion.completed']);
+
+      const res = await supertest(app.server)
+        .post('/internal/conversions/job-webhook-test/status')
+        .send({ status: 'completed' });
+
+      expect(res.status).toBe(200);
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.stringContaining('/internal/notifications/webhooks/send'),
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining('https://example.com/user-webhook'),
+        }),
+      );
+
+      fetchSpy.mockRestore();
+    });
+  });
 });

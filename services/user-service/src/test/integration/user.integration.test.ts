@@ -82,6 +82,47 @@ describe('User Service Integration Tests', () => {
         .set('Authorization', 'Bearer invalid.token.here');
       expect(res.status).toBe(401);
     });
+
+    it('should return 200 when authenticated via X-API-Key', async () => {
+      const crypto = await import('crypto');
+      const rawKey = 'fc_live_test_api_key_12345';
+      const keyHash = crypto.createHash('sha256').update(rawKey).digest('hex');
+      prisma.seedApiKey('key-1', 'user-1', keyHash);
+
+      const res = await supertest(app.server)
+        .get('/api/v1/users/me')
+        .set('X-API-Key', rawKey);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        id: 'user-1',
+        email: 'test@example.com',
+      });
+    });
+
+    it('should return 401 with invalid X-API-Key', async () => {
+      const res = await supertest(app.server)
+        .get('/api/v1/users/me')
+        .set('X-API-Key', 'invalid_key_value');
+      expect(res.status).toBe(401);
+    });
+
+    it('should return 200 when authenticated via Bearer <apiKey>', async () => {
+      const crypto = await import('crypto');
+      const rawKey = 'fc_live_test_bearer_key_67890';
+      const keyHash = crypto.createHash('sha256').update(rawKey).digest('hex');
+      prisma.seedApiKey('key-2', 'user-1', keyHash);
+
+      const res = await supertest(app.server)
+        .get('/api/v1/users/me')
+        .set('Authorization', `Bearer ${rawKey}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        id: 'user-1',
+        email: 'test@example.com',
+      });
+    });
   });
 
   describe('PATCH /api/v1/users/me', () => {

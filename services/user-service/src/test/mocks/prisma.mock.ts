@@ -172,7 +172,30 @@ export class InMemoryPrismaClient {
     this.usageLogs.clear();
     this.webhookEndpoints.clear();
     this.webhookDeliveries.clear();
+    this.apiKeys.clear();
   }
+
+  apiKeys: Map<string, any> = new Map();
+
+  apiKey = {
+    findFirst: async ({ where, include }: { where?: { keyHash?: string; revokedAt?: any }; include?: any }) => {
+      for (const k of this.apiKeys.values()) {
+        if (where?.keyHash && k.keyHash !== where.keyHash) continue;
+        if (where?.revokedAt === null && k.revokedAt !== null) continue;
+        const res = { ...k };
+        if (include?.user) {
+          res.user = this.users.get(k.userId) ?? null;
+        }
+        return res;
+      }
+      return null;
+    },
+    update: async ({ where, data }: { where: { id: string }; data: any }) => {
+      const k = this.apiKeys.get(where.id);
+      if (k) Object.assign(k, data);
+      return k;
+    },
+  };
 
   /** Seed a default test user */
   seedUser(id = 'user-1', email = 'test@example.com', tier = 'free') {
@@ -188,6 +211,21 @@ export class InMemoryPrismaClient {
       stripeSubscriptionId: null,
       createdAt: now,
       updatedAt: now,
+    });
+  }
+
+  /** Seed an API key */
+  seedApiKey(id = 'key-1', userId = 'user-1', keyHash = 'samplehash', permissions = ['*']) {
+    this.apiKeys.set(id, {
+      id,
+      userId,
+      keyHash,
+      name: 'Test Key',
+      permissions,
+      expiresAt: null,
+      revokedAt: null,
+      lastUsedAt: null,
+      createdAt: new Date(),
     });
   }
 }

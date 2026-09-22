@@ -173,11 +173,79 @@ export class InMemoryPrismaClient {
     },
   };
 
+  webhookEndpoints: Map<string, any> = new Map();
+  apiKeys: Map<string, any> = new Map();
+
+  webhookEndpoint = {
+    findMany: async ({ where }: { where?: { userId?: string; active?: boolean } }) => {
+      const res: any[] = [];
+      for (const ep of this.webhookEndpoints.values()) {
+        if (where?.userId && ep.userId !== where.userId) continue;
+        if (where?.active !== undefined && ep.active !== where.active) continue;
+        res.push(ep);
+      }
+      return res;
+    },
+    create: async ({ data }: { data: any }) => {
+      const id = data.id ?? uuidv4();
+      const ep = { id, ...data, createdAt: new Date() };
+      this.webhookEndpoints.set(id, ep);
+      return ep;
+    },
+  };
+
+  apiKey = {
+    findFirst: async ({ where, include }: { where?: { keyHash?: string; revokedAt?: any }; include?: any }) => {
+      for (const k of this.apiKeys.values()) {
+        if (where?.keyHash && k.keyHash !== where.keyHash) continue;
+        if (where?.revokedAt === null && k.revokedAt !== null) continue;
+        const res = { ...k };
+        if (include?.user) {
+          res.user = this.users.get(k.userId) ?? null;
+        }
+        return res;
+      }
+      return null;
+    },
+    update: async ({ where, data }: { where: { id: string }; data: any }) => {
+      const k = this.apiKeys.get(where.id);
+      if (k) Object.assign(k, data);
+      return k;
+    },
+  };
+
   /** Reset all in-memory data (call between tests) */
   reset() {
     this.jobs.clear();
     this.usageLogs.clear();
     this.users.clear();
+    this.webhookEndpoints.clear();
+    this.apiKeys.clear();
+  }
+
+  seedApiKey(id = 'key-1', userId = 'user-1', keyHash = 'samplehash', permissions = ['*']) {
+    this.apiKeys.set(id, {
+      id,
+      userId,
+      keyHash,
+      name: 'Test Key',
+      permissions,
+      expiresAt: null,
+      revokedAt: null,
+      lastUsedAt: null,
+      createdAt: new Date(),
+    });
+  }
+
+  seedWebhookEndpoint(id = 'ep-1', userId = 'user-1', url = 'https://webhook.site/test', events = ['conversion.completed']) {
+    this.webhookEndpoints.set(id, {
+      id,
+      userId,
+      url,
+      events,
+      active: true,
+      createdAt: new Date(),
+    });
   }
 
   /**

@@ -57,25 +57,64 @@ export async function internalConversionRoutes(fastify: FastifyInstance): Promis
         });
 
         // ── Trigger webhook delivery on terminal state ────────────────────────
-        if ((status === 'completed' || status === 'failed') && job.webhookUrl) {
+        if (status === 'completed' || status === 'failed') {
           const env = getEnv();
-          // Fire-and-forget — the notification-service handles retries
-          fetch(`${env.NOTIFICATION_SERVICE_URL}/internal/notifications/webhooks/send`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              webhookUrl: job.webhookUrl,
-              payload: {
-                jobId: job.id,
-                status: job.status,
-                resultFileId: job.resultFileId ?? null,
-                errorMessage: job.errorMessage ?? null,
-                userId: job.userId,
+          const eventName = status === 'completed' ? 'conversion.completed' : 'conversion.failed';
+          const targetUrls = new Set<string>();
+
+          if (job.webhookUrl) {
+            targetUrls.add(job.webhookUrl);
+          }
+
+          // Query user-registered webhook endpoints subscribed to this event
+          if (job.userId && !job.userId.startsWith('guest_') && (fastify.prisma as any).webhookEndpoint) {
+            try {
+              const endpoints = await (fastify.prisma as any).webhookEndpoint.findMany({
+                where: {
+                  userId: job.userId,
+                  active: true,
+                },
+              });
+              for (const ep of endpoints) {
+                if (
+                  !ep.events ||
+                  ep.events.length === 0 ||
+                  ep.events.includes('*') ||
+                  ep.events.includes(eventName)
+                ) {
+                  if (ep.url) {
+                    targetUrls.add(ep.url);
+                  }
+                }
+              }
+            } catch (err) {
+              fastify.log.error({ err, userId: job.userId }, 'failed to query user webhook endpoints');
+            }
+          }
+
+          const payload = {
+            event: eventName,
+            jobId: job.id,
+            status: job.status,
+            resultFileId: job.resultFileId ?? null,
+            errorMessage: job.errorMessage ?? null,
+            userId: job.userId,
+            timestamp: new Date().toISOString(),
+          };
+
+          for (const targetUrl of targetUrls) {
+            // Fire-and-forget — the notification-service handles retries
+            fetch(`${env.NOTIFICATION_SERVICE_URL}/internal/notifications/webhooks/send`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
               },
-            }),
-          }).catch((err) => fastify.log.error({ err, jobId }, 'webhook delivery trigger failed'));
+              body: JSON.stringify({
+                webhookUrl: targetUrl,
+                payload,
+              }),
+            }).catch((err) => fastify.log.error({ err, jobId, webhookUrl: targetUrl }, 'webhook delivery trigger failed'));
+          }
         }
 
         return reply.status(200).send({ ok: true, jobId, status });

@@ -115,6 +115,31 @@ describe('Upload Service Integration Tests', () => {
       expect(res.status).toBe(401);
     });
 
+    it('should allow upload with valid X-API-Key', async () => {
+      const crypto = await import('crypto');
+      const rawKey = 'fc_live_upload_key_123';
+      const keyHash = crypto.createHash('sha256').update(rawKey).digest('hex');
+      prisma.seedApiKey('key-up-1', 'user-api-1', keyHash);
+
+      const res = await supertest(app.server)
+        .post('/api/v1/uploads')
+        .set('X-API-Key', rawKey)
+        .send({ filename: 'api-upload.png', contentType: 'image/png', fileSize: 2048 });
+
+      expect(res.status).toBe(201);
+      expect(res.body.presignedUrl).toBeDefined();
+      expect(res.body.uploadId).toBeDefined();
+    });
+
+    it('should return 401 for invalid X-API-Key', async () => {
+      const res = await supertest(app.server)
+        .post('/api/v1/uploads')
+        .set('X-API-Key', 'invalid_api_key_str')
+        .send({ filename: 'api-upload.png', contentType: 'image/png', fileSize: 2048 });
+
+      expect(res.status).toBe(401);
+    });
+
     it('should return 400 for missing filename', async () => {
       const res = await supertest(app.server)
         .post('/api/v1/uploads')
