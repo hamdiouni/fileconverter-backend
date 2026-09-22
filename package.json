@@ -16,7 +16,8 @@
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "clean": "npm run clean --workspaces --if-present && rm -rf node_modules"
+    "clean": "npm run clean --workspaces --if-present && rm -rf node_modules",
+    "stripe:setup": "node scripts/setup-stripe-products.js"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

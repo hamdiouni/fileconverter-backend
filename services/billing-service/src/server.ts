@@ -1,33 +1,18 @@
+import Stripe from 'stripe';
 import { buildApp } from './app';
 import { getEnv } from './config/env';
 
-// In production, the real Stripe SDK would be imported here
-// For now we just provide a stub; replace with real Stripe client in production
-const productionStripe = {
-  checkout: {
-    sessions: {
-      create: async (_params: any): Promise<any> => {
-        throw new Error('Real Stripe SDK not configured. Set STRIPE_SECRET_KEY and import stripe SDK.');
-      },
-    },
-  },
-  billingPortal: {
-    sessions: {
-      create: async (_params: any): Promise<any> => {
-        throw new Error('Real Stripe SDK not configured. Set STRIPE_SECRET_KEY and import stripe SDK.');
-      },
-    },
-  },
-  webhooks: {
-    constructEvent: (_body: string, _sig: string, _secret: string): any => {
-      throw new Error('Real Stripe SDK not configured.');
-    },
-  },
-};
+const env = getEnv();
+
+const stripeClient = new Stripe(env.STRIPE_SECRET_KEY, {
+  apiVersion: '2023-10-16' as any,
+  typescript: true,
+});
 
 const start = async () => {
-  const app = await buildApp({ logger: true, stripe: productionStripe });
-  await app.listen({ port: getEnv().PORT, host: '0.0.0.0' });
+  const app = await buildApp({ logger: true, stripe: stripeClient as any });
+  await app.listen({ port: env.PORT, host: '0.0.0.0' });
 };
 
 start().catch(console.error);
+

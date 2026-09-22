@@ -32,7 +32,14 @@ export class BillingService {
     cancelUrl: string,
   ): Promise<{ sessionId: string; url: string }> {
     const env = getEnv();
-    const validPrices = [env.STRIPE_PRICE_PRO, env.STRIPE_PRICE_BUSINESS];
+    const validPrices = [
+      env.STRIPE_PRICE_PRO,
+      env.STRIPE_PRICE_PRO_MONTHLY,
+      env.STRIPE_PRICE_PRO_YEARLY,
+      env.STRIPE_PRICE_BUSINESS,
+      env.STRIPE_PRICE_BUSINESS_MONTHLY,
+      env.STRIPE_PRICE_BUSINESS_YEARLY,
+    ].filter(Boolean);
     if (!validPrices.includes(priceId)) {
       const err = new Error(`Invalid price ID: ${priceId}`) as any;
       err.statusCode = 400;
@@ -89,6 +96,14 @@ export class BillingService {
     }
 
     switch (event.type) {
+      case 'checkout.session.completed': {
+        const session = event.data.object;
+        const userId = session.metadata?.userId || session.client_reference_id;
+        if (session.customer && userId) {
+          await this.redis.set(`stripe:customer:${userId}`, session.customer);
+        }
+        break;
+      }
       case 'customer.subscription.created':
       case 'customer.subscription.updated': {
         const sub = event.data.object;
@@ -162,8 +177,20 @@ export class BillingService {
 
   private tierFromPriceId(priceId: string): string {
     const env = getEnv();
-    if (priceId === env.STRIPE_PRICE_PRO) return 'pro';
-    if (priceId === env.STRIPE_PRICE_BUSINESS) return 'business';
+    if (
+      priceId === env.STRIPE_PRICE_PRO ||
+      priceId === env.STRIPE_PRICE_PRO_MONTHLY ||
+      priceId === env.STRIPE_PRICE_PRO_YEARLY
+    ) {
+      return 'pro';
+    }
+    if (
+      priceId === env.STRIPE_PRICE_BUSINESS ||
+      priceId === env.STRIPE_PRICE_BUSINESS_MONTHLY ||
+      priceId === env.STRIPE_PRICE_BUSINESS_YEARLY
+    ) {
+      return 'business';
+    }
     return 'free';
   }
 
