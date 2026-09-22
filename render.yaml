@@ -1,5 +1,5 @@
 # Render Blueprint for FileConverter Pro Backend
-# Deploy automatically on render.com with 1 click!
+# Deploy 100% FREE without credit card or database fees!
 
 services:
   - type: web
@@ -13,10 +13,6 @@ services:
         value: production
       - key: PORT
         value: "10000"
-      - key: DATABASE_URL
-        fromDatabase:
-          name: fileconverter-db
-          property: connectionString
       - key: JWT_ACCESS_SECRET
         generateValue: true
       - key: JWT_REFRESH_SECRET
@@ -27,10 +23,3 @@ services:
         value: "https://fileconverter-frontend-fawn.vercel.app"
       - key: ALLOWED_ORIGINS
         value: "https://fileconverter-frontend-fawn.vercel.app,http://localhost:3000,http://localhost:8080"
-
-databases:
-  - name: fileconverter-db
-    databaseName: fileconverter
-    user: fileconverter_user
-    plan: free
-    region: oregon

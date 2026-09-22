@@ -20,13 +20,13 @@ RUN npm ci --prefer-offline --no-audit
 RUN npx prisma generate --schema=./prisma/schema.prisma
 RUN npm run build --workspaces --if-present
 
-# ── Stage 2: Runtime image with Node 20, Nginx & Redis ──
+# ── Stage 2: Runtime image with Node 20, Nginx, Redis & PostgreSQL ──
 FROM node:20-alpine AS runner
 
 WORKDIR /app
 
-# Install runtime dependencies (nginx, redis, openssl, curl, wget, bash)
-RUN apk add --no-cache nginx redis openssl curl wget bash
+# Install runtime dependencies (nginx, redis, postgresql, su-exec, openssl, curl, wget, bash)
+RUN apk add --no-cache nginx redis postgresql postgresql-contrib su-exec openssl curl wget bash
 
 # Copy built node_modules, generated prisma client, and compiled code
 COPY --from=builder /app/package*.json ./
