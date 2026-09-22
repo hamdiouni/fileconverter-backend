@@ -40,11 +40,26 @@ export class BillingService {
       throw err;
     }
     const session = await this.stripe.checkout.sessions.create({
+      ui_mode: 'hosted_page',
       mode: 'subscription',
+      billing_address_collection: 'auto',
+      phone_number_collection: {
+        enabled: false,
+      },
+      automatic_tax: {
+        enabled: false,
+      },
+      allow_promotion_codes: true,
+      payment_method_collection: 'always',
+      submit_type: 'auto',
+      saved_payment_method_options: {
+        payment_method_save: 'enabled',
+      },
+      integration_identifier: 'hosted_web_0001',
+      origin_context: 'web',
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: successUrl,
       cancel_url: cancelUrl,
-      metadata: { userId },
     });
     return { sessionId: session.id, url: session.url };
   }
