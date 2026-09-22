@@ -17,12 +17,13 @@ FORMAT_PIL_MAP = {
     "tiff": "TIFF",
     "bmp": "BMP",
     "gif": "GIF",
+    "pdf": "PDF",
 }
 
 # Formats that support transparency (RGBA mode)
 RGBA_FORMATS = {"png", "webp", "gif"}
 # Formats that require RGB
-RGB_FORMATS = {"jpg", "jpeg", "bmp", "tiff"}
+RGB_FORMATS = {"jpg", "jpeg", "bmp", "tiff", "pdf"}
 
 
 class ImageConversionError(Exception):
