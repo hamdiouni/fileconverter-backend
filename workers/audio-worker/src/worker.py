@@ -39,11 +39,46 @@ AUDIO_FORMAT_MIME = {
 
 # ── Health server ─────────────────────────────────────────────────────────────
 
+_redis_client_for_health: Any = None
+
+
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
-            body = b'{"status":"ok","service":"audio-worker"}'
-            self.send_response(200)
+            checks = {}
+            is_ok = True
+            global _redis_client_for_health
+            if _redis_client_for_health is not None:
+                try:
+                    _redis_client_for_health.ping()
+                    checks["redis"] = "ok"
+                except Exception as exc:
+                    checks["redis"] = f"error: {exc}"
+                    is_ok = False
+            else:
+                try:
+                    import urllib.parse
+                    p = urllib.parse.urlparse(REDIS_URL)
+                    c = redis_lib.Redis(
+                        host=p.hostname or "localhost",
+                        port=p.port or 6379,
+                        password=p.password or None,
+                        socket_connect_timeout=2,
+                        socket_timeout=2,
+                    )
+                    c.ping()
+                    checks["redis"] = "ok"
+                except Exception as exc:
+                    checks["redis"] = f"error: {exc}"
+                    is_ok = False
+
+            status_code = 200 if is_ok else 503
+            body = json.dumps({
+                "status": "ok" if is_ok else "degraded",
+                "service": "audio-worker",
+                "checks": checks,
+            }).encode("utf-8")
+            self.send_response(status_code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -51,9 +86,13 @@ class _HealthHandler(BaseHTTPRequestHandler):
         else:
             self.send_response(404)
             self.end_headers()
+
     def log_message(self, *args): pass
 
-def _start_health_server(port=9090):
+def _start_health_server(port=9090, redis_client=None):
+    global _redis_client_for_health
+    if redis_client is not None:
+        _redis_client_for_health = redis_client
     server = HTTPServer(("0.0.0.0", port), _HealthHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
@@ -79,7 +118,10 @@ def make_redis():
                                 db=int((p.path or "/0").lstrip("/") or "0"),
                                 password=p.password or None, decode_responses=True,
                                 socket_connect_timeout=5, socket_timeout=30)
-            c.ping(); return c
+            c.ping()
+            global _redis_client_for_health
+            _redis_client_for_health = c
+            return c
         except Exception as exc:
             log.warning("redis_retry", attempt=attempt+1, error=str(exc))
             time.sleep(2 ** min(attempt, 4))
@@ -100,12 +142,11 @@ def post_status(url, payload):
         except urllib.error.URLError as e:
             time.sleep(2 ** i)
 
-def s3_download(s3, bucket, key):
-    resp = s3.get_object(Bucket=bucket, Key=key)
-    return resp["Body"].read()
+def s3_download(s3, bucket, key, target_path):
+    s3.download_file(bucket, key, target_path)
 
-def s3_upload(s3, bucket, key, data, mime):
-    s3.put_object(Bucket=bucket, Key=key, Body=data, ContentType=mime)
+def s3_upload(s3, bucket, key, file_path, mime):
+    s3.upload_file(file_path, bucket, key, ExtraArgs={"ContentType": mime})
 
 
 # ── Processing ────────────────────────────────────────────────────────────────
@@ -125,35 +166,30 @@ def process_job(job_data: dict[str, Any]) -> None:
     post_status(callback, {"status": "processing", "progress": 10, "workerId": WORKER_ID})
 
     s3 = make_s3(src_bucket)
+    inf_path = None
+    outf_path = None
     try:
-        audio_bytes = s3_download(s3, src_bucket, source_id)
-        post_status(callback, {"status": "processing", "progress": 30, "workerId": WORKER_ID})
-
         with tempfile.NamedTemporaryFile(suffix=f".{src_fmt}", delete=False) as inf, \
              tempfile.NamedTemporaryFile(suffix=f".{tgt_fmt}", delete=False) as outf:
             inf_path, outf_path = inf.name, outf.name
-            inf.write(audio_bytes)
 
-        try:
-            result = subprocess.run(
-                ["ffmpeg", "-y", "-i", inf_path, outf_path],
-                capture_output=True, timeout=300
-            )
-            if result.returncode != 0:
-                raise RuntimeError(f"ffmpeg failed: {result.stderr.decode()[:500]}")
+        # Stream directly from S3 to disk to avoid loading audio into RAM
+        s3_download(s3, src_bucket, source_id, inf_path)
+        post_status(callback, {"status": "processing", "progress": 30, "workerId": WORKER_ID})
 
-            with open(outf_path, "rb") as f:
-                out_bytes = f.read()
-        finally:
-            os.unlink(inf_path)
-            try: os.unlink(outf_path)
-            except: pass
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", inf_path, outf_path],
+            capture_output=True, timeout=300
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg failed: {result.stderr.decode()[:500]}")
 
         post_status(callback, {"status": "processing", "progress": 80, "workerId": WORKER_ID})
 
         result_key = f"results/{job_id}/{uuid.uuid4()}.{tgt_fmt}"
         mime = AUDIO_FORMAT_MIME.get(tgt_fmt, "audio/mpeg")
-        s3_upload(s3, res_bucket, result_key, out_bytes, mime)
+        # Stream upload directly from disk to S3
+        s3_upload(s3, res_bucket, result_key, outf_path, mime)
 
         post_status(callback, {"status": "completed", "progress": 100,
                                 "resultFileId": result_key, "workerId": WORKER_ID})
@@ -162,22 +198,51 @@ def process_job(job_data: dict[str, Any]) -> None:
     except Exception as exc:
         logger.error("audio_job_failed", error=str(exc))
         post_status(callback, {"status": "failed", "errorMessage": str(exc), "workerId": WORKER_ID})
+    finally:
+        if inf_path and os.path.exists(inf_path):
+            try: os.unlink(inf_path)
+            except Exception: pass
+        if outf_path and os.path.exists(outf_path):
+            try: os.unlink(outf_path)
+            except Exception: pass
 
 
 # ── Consumer loop ─────────────────────────────────────────────────────────────
 
 def run_consumer(redis_client):
-    log.info("consumer_started", queue=QUEUE_KEY)
+    active_key = QUEUE_KEY.replace(":wait", ":active") if ":wait" in QUEUE_KEY else f"{QUEUE_KEY}:active"
+    log.info("consumer_started", queue=QUEUE_KEY, active_queue=active_key)
+
+    # Recover any orphaned jobs from a previous crash
+    try:
+        recovered = 0
+        while True:
+            item = redis_client.rpoplpush(active_key, QUEUE_KEY)
+            if item is None:
+                break
+            recovered += 1
+        if recovered > 0:
+            log.info("recovered_orphaned_jobs", count=recovered, queue=QUEUE_KEY)
+    except Exception as exc:
+        log.warning("orphan_recovery_failed", error=str(exc))
+
     while not _shutdown:
+        raw = None
         try:
-            result = redis_client.brpop(QUEUE_KEY, timeout=5)
-            if result is None: continue
-            _, raw = result
+            raw = redis_client.brpoplpush(QUEUE_KEY, active_key, timeout=5)
+            if raw is None:
+                continue
             try:
                 envelope = json.loads(raw)
                 process_job(envelope.get("data", {}))
             except json.JSONDecodeError as e:
                 log.error("envelope_parse_error", error=str(e))
+                redis_client.lrem(active_key, 1, raw)
+            finally:
+                try:
+                    redis_client.lrem(active_key, 1, raw)
+                except Exception:
+                    pass
         except redis_lib.exceptions.ConnectionError as e:
             log.error("redis_lost", error=str(e)); time.sleep(5)
         except Exception as e:
@@ -187,8 +252,8 @@ def run_consumer(redis_client):
 
 if __name__ == "__main__":
     log.info("worker_started", service="audio-worker", pid=os.getpid())
-    _start_health_server(9090)
-    log.info("health_server_started", port=9090)
     redis_client = make_redis()
+    _start_health_server(9090, redis_client=redis_client)
+    log.info("health_server_started", port=9090)
     run_consumer(redis_client)
     log.info("worker_stopped", service="audio-worker")

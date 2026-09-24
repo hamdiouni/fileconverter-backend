@@ -258,3 +258,44 @@ class TestModels:
         opts = ConversionOptions()
         assert opts.codec is None
         assert opts.bitrate is None
+
+
+# ─── Streaming S3 / Memory Safety (MAJ-04) ───────────────────────────────────
+
+class TestStreamingS3:
+    def test_process_job_streams_via_download_and_upload_file(self):
+        import sys
+        for mod in ["redis", "structlog", "boto3"]:
+            if mod not in sys.modules:
+                sys.modules[mod] = MagicMock()
+
+        import src.worker as worker
+
+        mock_s3 = MagicMock()
+        with patch.object(worker, "make_s3", return_value=mock_s3), \
+             patch.object(worker, "post_status"), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)):
+
+            job_data = {
+                "jobId": "test-job-123",
+                "sourceFileId": "uploads/video-123.mp4",
+                "sourceFormat": "mp4",
+                "targetFormat": "webm",
+                "sourceBucket": "test-uploads",
+                "resultBucket": "test-results",
+                "callbackUrl": "http://localhost:3000/callback",
+            }
+
+            worker.process_job(job_data)
+
+            # Verify streaming download to file (not in-memory get_object)
+            assert mock_s3.download_file.called
+            assert mock_s3.download_file.call_args[0][0] == "test-uploads"
+            assert mock_s3.download_file.call_args[0][1] == "uploads/video-123.mp4"
+            assert not mock_s3.get_object.called
+
+            # Verify streaming upload from file (not in-memory put_object)
+            assert mock_s3.upload_file.called
+            assert mock_s3.upload_file.call_args[0][1] == "test-results"
+            assert not mock_s3.put_object.called
+

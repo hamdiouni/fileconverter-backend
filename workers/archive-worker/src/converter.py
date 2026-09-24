@@ -5,16 +5,24 @@ Requirements: 10.1, 10.4, 10.5, 10.6
 """
 from __future__ import annotations
 import io
+import os
+import shutil
+import subprocess
 import tarfile
+import tempfile
 import time
 import zipfile
 from typing import Any, Dict, List, Optional, Tuple
 
 # Maximum uncompressed size: 10 GB
 MAX_UNCOMPRESSED_BYTES = 10 * 1024 * 1024 * 1024
+# Maximum file count in a single archive to prevent inode/memory exhaustion
+MAX_FILE_COUNT = 50_000
+# Maximum compression ratio (uncompressed : compressed) to detect zip bombs
+MAX_COMPRESSION_RATIO = 200
 
 # Supported archive formats
-SUPPORTED_FORMATS = {"zip", "tar", "tar.gz", "tgz", "gz"}
+SUPPORTED_FORMATS = {"zip", "tar", "tar.gz", "tgz", "gz", "bz2", "tar.bz2", "xz", "tar.xz", "7z", "rar"}
 WRITABLE_FORMATS = {"zip", "tar", "tar.gz", "tgz"}
 
 
@@ -32,6 +40,49 @@ class ArchiveIntegrityError(ArchiveConversionError):
     """Raised when archive is corrupted or unreadable."""
     pass
 
+class ArchiveSecurityError(ArchiveConversionError):
+    """Raised when an archive security check fails (path traversal, zip bomb ratio, etc)."""
+    pass
+
+
+def sanitize_entry_name(name: str) -> str:
+    """
+    Sanitize archive member path to prevent path traversal / Zip Slip.
+    Rejects absolute paths, drive letters, and '..' path components.
+    """
+    clean = name.replace("\\", "/").strip()
+    if len(clean) >= 2 and clean[1] == ":":
+        clean = clean[2:]
+    clean = clean.lstrip("/")
+
+    parts = [p for p in clean.split("/") if p and p != "."]
+    for p in parts:
+        if p == "..":
+            raise ArchiveSecurityError(f"Path traversal detected in archive entry: {name}")
+
+    if not parts:
+        raise ArchiveSecurityError(f"Invalid empty archive entry name: {name}")
+
+    return "/".join(parts)
+
+
+def validate_archive_safety(archive_size: int, total_uncompressed: int, file_count: int) -> None:
+    """Validate archive against zip bomb thresholds."""
+    if total_uncompressed > MAX_UNCOMPRESSED_BYTES:
+        gb = total_uncompressed / (1024 ** 3)
+        raise ArchiveTooLargeError(
+            f"Uncompressed size {gb:.2f} GB exceeds maximum allowed 10 GB"
+        )
+    if file_count > MAX_FILE_COUNT:
+        raise ArchiveSecurityError(
+            f"Archive file count {file_count} exceeds maximum allowed {MAX_FILE_COUNT}"
+        )
+    if archive_size > 0 and (total_uncompressed / archive_size) > MAX_COMPRESSION_RATIO:
+        ratio = total_uncompressed / archive_size
+        raise ArchiveSecurityError(
+            f"Suspicious compression ratio {ratio:.1f}:1 exceeds maximum allowed {MAX_COMPRESSION_RATIO}:1"
+        )
+
 
 def validate_format(fmt: str) -> bool:
     """Return True if fmt is a supported archive format."""
@@ -39,7 +90,14 @@ def validate_format(fmt: str) -> bool:
 
 
 def _open_tar(data: bytes, fmt: str) -> tarfile.TarFile:
-    mode = "r:gz" if fmt in ("tar.gz", "tgz", "gz") else "r:"
+    if fmt in ("tar.gz", "tgz", "gz"):
+        mode = "r:gz"
+    elif fmt in ("tar.bz2", "bz2"):
+        mode = "r:bz2"
+    elif fmt in ("tar.xz", "xz"):
+        mode = "r:xz"
+    else:
+        mode = "r:*"
     return tarfile.open(fileobj=io.BytesIO(data), mode=mode)
 
 
@@ -131,11 +189,60 @@ def create_tar_from_entries(entries: List[Tuple[str, bytes]], compress: bool = F
     return buf.getvalue()
 
 
+def extract_7z_or_rar(source_data: bytes, fmt: str) -> List[Tuple[str, bytes]]:
+    """Extract files from 7z or rar archive using system 7z/unar utility."""
+    cmd = shutil.which("7z") or shutil.which("unar")
+    if not cmd:
+        raise UnsupportedFormatError(
+            f"Extraction of format '{fmt}' requires '7z' or 'unar' CLI tool which is not installed"
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        input_file = os.path.join(tmpdir, f"input.{fmt}")
+        with open(input_file, "wb") as f:
+            f.write(source_data)
+
+        out_dir = os.path.join(tmpdir, "extracted")
+        os.makedirs(out_dir, exist_ok=True)
+
+        if "7z" in os.path.basename(cmd):
+            res = subprocess.run(
+                [cmd, "x", "-y", f"-o{out_dir}", input_file],
+                capture_output=True, timeout=120
+            )
+        else:
+            res = subprocess.run(
+                [cmd, "-o", out_dir, "-f", input_file],
+                capture_output=True, timeout=120
+            )
+
+        if res.returncode != 0:
+            raise ArchiveIntegrityError(f"Failed to extract {fmt} archive: {res.stderr.decode()[:300]}")
+
+        entries: List[Tuple[str, bytes]] = []
+        total_size = 0
+        file_count = 0
+
+        for root, _, filenames in os.walk(out_dir):
+            for fname in filenames:
+                full_path = os.path.join(root, fname)
+                rel_path = os.path.relpath(full_path, out_dir).replace("\\", "/")
+                safe_name = sanitize_entry_name(rel_path)
+                with open(full_path, "rb") as ef:
+                    data = ef.read()
+                total_size += len(data)
+                file_count += 1
+                validate_archive_safety(len(source_data), total_size, file_count)
+                entries.append((safe_name, data))
+
+        return entries
+
+
 def repack_archive(source_data: bytes, source_format: str, target_format: str) -> bytes:
     """
     Extract all files from source archive and repack into target format.
-    Validates size limit before extraction.
-    Requirements: 10.1
+    Validates size limit and path safety before and during extraction.
+    Requirements: 10.1, 10.4
     """
     src = source_format.lower().strip()
     tgt = target_format.lower().strip()
@@ -146,21 +253,33 @@ def repack_archive(source_data: bytes, source_format: str, target_format: str) -
         raise UnsupportedFormatError(f"Cannot write format: {target_format}")
 
     uncompressed = estimate_uncompressed_size(source_data, src)
-    check_size_limit(uncompressed)
+    if uncompressed > 0:
+        check_size_limit(uncompressed)
 
     entries: List[Tuple[str, bytes]] = []
+    total_size = 0
     if src == "zip":
         with zipfile.ZipFile(io.BytesIO(source_data)) as zf:
-            for name in zf.namelist():
-                if not name.endswith("/"):
-                    entries.append((name, zf.read(name)))
-    elif src in ("tar", "tar.gz", "tgz", "gz"):
+            for info in zf.infolist():
+                if not info.filename.endswith("/"):
+                    safe_name = sanitize_entry_name(info.filename)
+                    data = zf.read(info)
+                    total_size += len(data)
+                    validate_archive_safety(len(source_data), total_size, len(entries) + 1)
+                    entries.append((safe_name, data))
+    elif src in ("tar", "tar.gz", "tgz", "gz", "bz2", "tar.bz2", "xz", "tar.xz"):
         with _open_tar(source_data, src) as tf:
             for m in tf.getmembers():
                 if m.isfile():
+                    safe_name = sanitize_entry_name(m.name)
                     f = tf.extractfile(m)
                     if f:
-                        entries.append((m.name, f.read()))
+                        data = f.read()
+                        total_size += len(data)
+                        validate_archive_safety(len(source_data), total_size, len(entries) + 1)
+                        entries.append((safe_name, data))
+    elif src in ("7z", "rar"):
+        entries = extract_7z_or_rar(source_data, src)
 
     if tgt == "zip":
         return create_zip_from_entries(entries)

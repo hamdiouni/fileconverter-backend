@@ -22,5 +22,6 @@ export class InMemoryRedis {
     return 1;
   }
   async quit(): Promise<'OK'> { return 'OK'; }
+  async ping(): Promise<string> { return 'PONG'; }
   reset() { this.store.clear(); }
 }

@@ -9,7 +9,7 @@ export interface StorageClient {
 }
 
 export interface DbClient {
-  getExpiredFiles(now: Date): Promise<Array<{ id: string; storageKey: string; userId: string }>>;
+  getExpiredFiles(now: Date): Promise<Array<{ id: string; storageKey: string; resultKeys?: string[]; userId: string }>>;
   markFileExpired(fileId: string): Promise<void>;
   deleteOldFailedJobs(olderThan: Date): Promise<number>;
   deleteInactiveGuestUsers(inactiveSince: Date): Promise<number>;
@@ -48,7 +48,7 @@ export class CleanupService {
   }
 
   /**
-   * Delete expired files from S3 and mark their DB records as expired.
+   * Delete expired files from S3 (uploads and results) and mark their DB records as expired.
    * Requirements: 23.1, 23.3
    */
   async cleanupExpiredFiles(now: Date = new Date()): Promise<{ deleted: number; errors: number }> {
@@ -60,6 +60,19 @@ export class CleanupService {
     for (const file of expiredFiles) {
       try {
         await this.storage.deleteObject(env.S3_BUCKET_UPLOADS, file.storageKey);
+
+        if (file.resultKeys && file.resultKeys.length > 0) {
+          for (const resultKey of file.resultKeys) {
+            if (resultKey) {
+              try {
+                await this.storage.deleteObject(env.S3_BUCKET_RESULTS, resultKey);
+              } catch (resErr) {
+                console.warn(`Failed to delete result file ${resultKey}:`, resErr);
+              }
+            }
+          }
+        }
+
         await this.db.markFileExpired(file.id);
         deleted++;
       } catch (err) {

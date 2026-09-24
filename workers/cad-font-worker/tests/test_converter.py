@@ -380,3 +380,143 @@ class TestModels:
         opts = ConversionOptions()
         assert opts.quality is None
         assert opts.preserve_metadata is False
+
+
+# ─── TestConvertMeshStlObj & TestConvertCAD ───────────────────────────────────
+
+class TestConvertCAD:
+    def test_mesh_stl_to_obj_and_back(self, tmp_path):
+        from src.converter import convert_mesh_stl_obj, convert_cad
+
+        stl_ascii = (
+            "solid test\n"
+            "  facet normal 0.0 0.0 1.0\n"
+            "    outer loop\n"
+            "      vertex 0.0 0.0 0.0\n"
+            "      vertex 1.0 0.0 0.0\n"
+            "      vertex 0.0 1.0 0.0\n"
+            "    endloop\n"
+            "  endfacet\n"
+            "endsolid test\n"
+        )
+        in_stl = tmp_path / "model.stl"
+        out_obj = tmp_path / "model.obj"
+        in_stl.write_text(stl_ascii)
+
+        convert_cad(str(in_stl), str(out_obj), "stl", "obj")
+        assert out_obj.exists()
+        obj_content = out_obj.read_text()
+        assert "v " in obj_content
+        assert "f " in obj_content
+
+        # Roundtrip back to binary STL
+        out_stl = tmp_path / "model_out.stl"
+        convert_cad(str(out_obj), str(out_stl), "obj", "stl")
+        assert out_stl.exists()
+        # Binary STL header (80) + count (4) + 1 triangle (50) = 134 bytes
+        assert out_stl.stat().st_size == 134
+
+    def test_invalid_cad_target_raises(self, tmp_path):
+        from src.converter import convert_cad, InvalidConversionError
+
+        in_f = tmp_path / "in.dwg"
+        out_f = tmp_path / "out.mp3"
+        in_f.write_text("dummy")
+
+        with pytest.raises(InvalidConversionError):
+            convert_cad(str(in_f), str(out_f), "dwg", "mp3")
+
+    def test_freecad_missing_raises_informative_error(self, tmp_path, monkeypatch):
+        import shutil
+        from src.converter import convert_cad, ConversionError
+
+        monkeypatch.setattr(shutil, "which", lambda cmd: None)
+
+        in_f = tmp_path / "in.dwg"
+        out_f = tmp_path / "out.pdf"
+        in_f.write_text("dummy")
+
+        with pytest.raises(ConversionError) as exc_info:
+            convert_cad(str(in_f), str(out_f), "dwg", "pdf")
+        assert "FreeCAD" in str(exc_info.value)
+
+    def test_freecad_execution_mocked(self, tmp_path, monkeypatch):
+        import shutil
+        import subprocess
+        from src.converter import convert_cad
+
+        monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/freecad")
+
+        in_f = tmp_path / "in.dwg"
+        out_f = tmp_path / "out.pdf"
+        in_f.write_text("dummy")
+
+        def fake_run(cmd, *args, **kwargs):
+            out_f.write_text("%PDF-1.4 dummy pdf")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        convert_cad(str(in_f), str(out_f), "dwg", "pdf")
+        assert out_f.exists()
+        assert out_f.read_text().startswith("%PDF")
+
+
+class TestWorkerProcessJob:
+    def test_process_job_cad_stl_to_obj(self, tmp_path, monkeypatch):
+        import sys
+        from unittest.mock import MagicMock
+        if "redis" not in sys.modules:
+            sys.modules["redis"] = MagicMock()
+
+        from src.worker import process_job
+
+        stl_ascii = (
+            "solid test\n"
+            "  facet normal 0.0 0.0 1.0\n"
+            "    outer loop\n"
+            "      vertex 0.0 0.0 0.0\n"
+            "      vertex 1.0 0.0 0.0\n"
+            "      vertex 0.0 1.0 0.0\n"
+            "    endloop\n"
+            "  endfacet\n"
+            "endsolid test\n"
+        )
+        src_file = tmp_path / "source.stl"
+        src_file.write_text(stl_ascii)
+
+        uploaded = {}
+        statuses = []
+
+        class FakeS3:
+            def download_file(self, bucket, key, filename):
+                with open(filename, "wb") as f_out:
+                    f_out.write(src_file.read_bytes())
+
+            def upload_file(self, filename, bucket, key, ExtraArgs=None):
+                with open(filename, "rb") as f_in:
+                    uploaded[key] = f_in.read()
+
+        import src.worker as worker_mod
+        monkeypatch.setattr(worker_mod, "make_s3", lambda: FakeS3())
+        monkeypatch.setattr(worker_mod, "post_status", lambda url, p: statuses.append(p))
+
+        job_data = {
+            "jobId": "test-job-cad-123",
+            "sourceFileId": "uploads/source.stl",
+            "sourceFormat": "stl",
+            "targetFormat": "obj",
+            "sourceBucket": "fileconverter-uploads",
+            "resultBucket": "fileconverter-results",
+            "callbackUrl": "http://localhost:8080/callback",
+        }
+
+        process_job(job_data)
+
+        assert any(s.get("status") == "completed" for s in statuses)
+        assert len(uploaded) == 1
+        result_content = list(uploaded.values())[0].decode()
+        assert "v " in result_content
+        assert "f " in result_content
+
+

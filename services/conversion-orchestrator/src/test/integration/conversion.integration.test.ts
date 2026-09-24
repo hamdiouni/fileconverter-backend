@@ -592,6 +592,56 @@ describe('Conversion Orchestrator Integration Tests', () => {
       expect(res.status).toBe(400);
       expect(res.body.error.code).toBe('INVALID_FORMAT_PAIR');
     });
+
+    it('should accept presentation conversions (pptx → pdf)', async () => {
+      const token = makeToken('user-fmt-pres');
+      const res = await supertest(app.server)
+        .post('/api/v1/conversions')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ sourceFileId: 'file-pptx-fmt-pres', targetFormat: 'pdf' });
+      expect(res.status).toBe(202);
+      expect(res.body.job.formatFamily).toBe('document');
+    });
+
+    it('should accept spreadsheet conversions (xlsx → pdf)', async () => {
+      const token = makeToken('user-fmt-sheet');
+      const res = await supertest(app.server)
+        .post('/api/v1/conversions')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ sourceFileId: 'file-xlsx-fmt-sheet', targetFormat: 'pdf' });
+      expect(res.status).toBe(202);
+      expect(res.body.job.formatFamily).toBe('document');
+    });
+
+    it('should accept ebook conversions (epub → pdf)', async () => {
+      const token = makeToken('user-fmt-ebook');
+      const res = await supertest(app.server)
+        .post('/api/v1/conversions')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ sourceFileId: 'file-epub-fmt-ebook', targetFormat: 'pdf' });
+      expect(res.status).toBe(202);
+      expect(res.body.job.formatFamily).toBe('document');
+    });
+
+    it('should accept extended image conversions (heic → jpg)', async () => {
+      const token = makeToken('user-fmt-heic');
+      const res = await supertest(app.server)
+        .post('/api/v1/conversions')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ sourceFileId: 'file-heic-fmt-heic', targetFormat: 'jpg' });
+      expect(res.status).toBe(202);
+      expect(res.body.job.formatFamily).toBe('image');
+    });
+
+    it('should accept CAD conversions (dwg → pdf)', async () => {
+      const token = makeToken('user-fmt-cad');
+      const res = await supertest(app.server)
+        .post('/api/v1/conversions')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ sourceFileId: 'file-dwg-fmt-cad', targetFormat: 'pdf' });
+      expect(res.status).toBe(202);
+      expect(res.body.job.formatFamily).toBe('cad');
+    });
   });
 
   // ─── API Key Authentication ───────────────────────────────────────────────
@@ -643,6 +693,63 @@ describe('Conversion Orchestrator Integration Tests', () => {
       );
 
       fetchSpy.mockRestore();
+    });
+  });
+
+  // ─── BLK-02: Security / Auth Guest Session Isolation ───────────────────────
+  describe('BLK-02: Security / Auth Guest Session Isolation & Token Rejection', () => {
+    it('should return 401 for expired or invalid JWT without falling back to guest', async () => {
+      const res = await supertest(app.server)
+        .post('/api/v1/conversions')
+        .set('Authorization', 'Bearer invalid.expired.token')
+        .send({ sourceFileId: 'file-png-001', targetFormat: 'jpg' });
+
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('UNAUTHORIZED');
+    });
+
+    it('should return 401 when no credentials are provided in test mode', async () => {
+      const res = await supertest(app.server)
+        .post('/api/v1/conversions')
+        .send({ sourceFileId: 'file-png-001', targetFormat: 'jpg' });
+
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('UNAUTHORIZED');
+    });
+
+    it('two guests from the same IP have distinct jobs and cannot see each other job lists', async () => {
+      // Guest A
+      const resA = await supertest(app.server)
+        .post('/api/v1/conversions')
+        .set('x-guest-mode', 'true')
+        .set('x-forwarded-for', '198.51.100.99')
+        .send({ sourceFileId: 'file-png-001', targetFormat: 'jpg' });
+
+      expect(resA.status).toBe(202);
+      const guestIdA = resA.headers['x-guest-id'];
+      expect(guestIdA).toBeDefined();
+
+      // Guest B from same IP
+      const resB = await supertest(app.server)
+        .post('/api/v1/conversions')
+        .set('x-guest-mode', 'true')
+        .set('x-forwarded-for', '198.51.100.99')
+        .send({ sourceFileId: 'file-png-002', targetFormat: 'jpg' });
+
+      expect(resB.status).toBe(202);
+      const guestIdB = resB.headers['x-guest-id'];
+      expect(guestIdB).toBeDefined();
+      expect(guestIdA).not.toEqual(guestIdB);
+
+      // Verify Guest A's job list only contains Guest A's job
+      const listA = await supertest(app.server)
+        .get('/api/v1/conversions')
+        .set('x-guest-id', guestIdA);
+
+      expect(listA.status).toBe(200);
+      const jobsA = listA.body.data;
+      expect(jobsA.some((j: any) => j.id === resA.body.jobId)).toBe(true);
+      expect(jobsA.some((j: any) => j.id === resB.body.jobId)).toBe(false);
     });
   });
 });

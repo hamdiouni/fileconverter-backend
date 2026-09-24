@@ -37,20 +37,60 @@ VIDEO_FORMAT_MIME = {
 }
 
 
+_redis_client_for_health: Any = None
+
+
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
-            body = b'{"status":"ok","service":"video-worker"}'
-            self.send_response(200)
+            checks = {}
+            is_ok = True
+            global _redis_client_for_health
+            if _redis_client_for_health is not None:
+                try:
+                    _redis_client_for_health.ping()
+                    checks["redis"] = "ok"
+                except Exception as exc:
+                    checks["redis"] = f"error: {exc}"
+                    is_ok = False
+            else:
+                try:
+                    import urllib.parse
+                    p = urllib.parse.urlparse(REDIS_URL)
+                    c = redis_lib.Redis(
+                        host=p.hostname or "localhost",
+                        port=p.port or 6379,
+                        password=p.password or None,
+                        socket_connect_timeout=2,
+                        socket_timeout=2,
+                    )
+                    c.ping()
+                    checks["redis"] = "ok"
+                except Exception as exc:
+                    checks["redis"] = f"error: {exc}"
+                    is_ok = False
+
+            status_code = 200 if is_ok else 503
+            body = json.dumps({
+                "status": "ok" if is_ok else "degraded",
+                "service": "video-worker",
+                "checks": checks,
+            }).encode("utf-8")
+            self.send_response(status_code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
         else:
-            self.send_response(404); self.end_headers()
+            self.send_response(404)
+            self.end_headers()
+
     def log_message(self, *args): pass
 
-def _start_health_server(port=9090):
+def _start_health_server(port=9090, redis_client=None):
+    global _redis_client_for_health
+    if redis_client is not None:
+        _redis_client_for_health = redis_client
     threading.Thread(target=HTTPServer(("0.0.0.0", port), _HealthHandler).serve_forever, daemon=True).start()
 
 def handle_shutdown(signum, frame):
@@ -69,7 +109,10 @@ def make_redis():
                                 db=int((p.path or "/0").lstrip("/") or "0"),
                                 password=p.password or None, decode_responses=True,
                                 socket_connect_timeout=5, socket_timeout=30)
-            c.ping(); return c
+            c.ping()
+            global _redis_client_for_health
+            _redis_client_for_health = c
+            return c
         except Exception as e:
             log.warning("redis_retry", attempt=i+1, error=str(e)); time.sleep(2 ** min(i, 4))
     raise RuntimeError("Redis connection failed")
@@ -104,40 +147,35 @@ def process_job(job_data: dict[str, Any]) -> None:
     post_status(callback, {"status": "processing", "progress": 5, "workerId": WORKER_ID})
 
     s3 = make_s3()
+    inf_path = None
+    outf_path = None
     try:
-        resp = s3.get_object(Bucket=src_bucket, Key=source_id)
-        video_bytes = resp["Body"].read()
+        with tempfile.NamedTemporaryFile(suffix=f".{src_fmt}", delete=False) as inf, \
+             tempfile.NamedTemporaryFile(suffix=f".{tgt_fmt}", delete=False) as outf:
+            inf_path, outf_path = inf.name, outf.name
+
+        # Stream directly from S3 to disk to avoid loading large videos into RAM
+        s3.download_file(src_bucket, source_id, inf_path)
         post_status(callback, {"status": "processing", "progress": 20, "workerId": WORKER_ID})
 
         codec = opts.get("codec")
         bitrate = opts.get("bitrate")
-
-        with tempfile.NamedTemporaryFile(suffix=f".{src_fmt}", delete=False) as inf, \
-             tempfile.NamedTemporaryFile(suffix=f".{tgt_fmt}", delete=False) as outf:
-            inf_path, outf_path = inf.name, outf.name
-            inf.write(video_bytes)
 
         cmd = ["ffmpeg", "-y", "-i", inf_path]
         if codec: cmd += ["-c:v", codec]
         if bitrate: cmd += ["-b:v", bitrate]
         cmd.append(outf_path)
 
-        try:
-            result = subprocess.run(cmd, capture_output=True, timeout=1800)
-            if result.returncode != 0:
-                raise RuntimeError(f"ffmpeg failed: {result.stderr.decode()[:500]}")
-            with open(outf_path, "rb") as f:
-                out_bytes = f.read()
-        finally:
-            os.unlink(inf_path)
-            try: os.unlink(outf_path)
-            except: pass
+        result = subprocess.run(cmd, capture_output=True, timeout=1800)
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg failed: {result.stderr.decode()[:500]}")
 
         post_status(callback, {"status": "processing", "progress": 85, "workerId": WORKER_ID})
 
         result_key = f"results/{job_id}/{uuid.uuid4()}.{tgt_fmt}"
         mime = VIDEO_FORMAT_MIME.get(tgt_fmt, "video/mp4")
-        s3.put_object(Bucket=res_bucket, Key=result_key, Body=out_bytes, ContentType=mime)
+        # Stream upload directly from disk to S3
+        s3.upload_file(outf_path, res_bucket, result_key, ExtraArgs={"ContentType": mime})
 
         post_status(callback, {"status": "completed", "progress": 100,
                                 "resultFileId": result_key, "workerId": WORKER_ID})
@@ -146,20 +184,49 @@ def process_job(job_data: dict[str, Any]) -> None:
     except Exception as exc:
         logger.error("video_job_failed", error=str(exc))
         post_status(callback, {"status": "failed", "errorMessage": str(exc), "workerId": WORKER_ID})
+    finally:
+        if inf_path and os.path.exists(inf_path):
+            try: os.unlink(inf_path)
+            except Exception: pass
+        if outf_path and os.path.exists(outf_path):
+            try: os.unlink(outf_path)
+            except Exception: pass
 
 
 def run_consumer(redis_client):
-    log.info("consumer_started", queue=QUEUE_KEY)
+    active_key = QUEUE_KEY.replace(":wait", ":active") if ":wait" in QUEUE_KEY else f"{QUEUE_KEY}:active"
+    log.info("consumer_started", queue=QUEUE_KEY, active_queue=active_key)
+
+    # Recover any orphaned jobs from a previous crash
+    try:
+        recovered = 0
+        while True:
+            item = redis_client.rpoplpush(active_key, QUEUE_KEY)
+            if item is None:
+                break
+            recovered += 1
+        if recovered > 0:
+            log.info("recovered_orphaned_jobs", count=recovered, queue=QUEUE_KEY)
+    except Exception as exc:
+        log.warning("orphan_recovery_failed", error=str(exc))
+
     while not _shutdown:
+        raw = None
         try:
-            result = redis_client.brpop(QUEUE_KEY, timeout=5)
-            if result is None: continue
-            _, raw = result
+            raw = redis_client.brpoplpush(QUEUE_KEY, active_key, timeout=5)
+            if raw is None:
+                continue
             try:
                 envelope = json.loads(raw)
                 process_job(envelope.get("data", {}))
             except json.JSONDecodeError as e:
                 log.error("envelope_parse_error", error=str(e))
+                redis_client.lrem(active_key, 1, raw)
+            finally:
+                try:
+                    redis_client.lrem(active_key, 1, raw)
+                except Exception:
+                    pass
         except redis_lib.exceptions.ConnectionError as e:
             log.error("redis_lost", error=str(e)); time.sleep(5)
         except Exception as e:
@@ -168,7 +235,7 @@ def run_consumer(redis_client):
 
 if __name__ == "__main__":
     log.info("worker_started", service="video-worker", pid=os.getpid())
-    _start_health_server(9090)
     redis_client = make_redis()
+    _start_health_server(9090, redis_client=redis_client)
     run_consumer(redis_client)
     log.info("worker_stopped", service="video-worker")

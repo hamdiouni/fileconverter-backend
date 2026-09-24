@@ -35,27 +35,71 @@ DOC_FORMAT_MIME = {
     "pdf": "application/pdf", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "odt": "application/vnd.oasis.opendocument.text", "html": "text/html",
     "txt": "text/plain", "rtf": "application/rtf", "md": "text/markdown",
+    "doc": "application/msword",
 }
 
 # Formats handled by Pandoc rather than LibreOffice
 PANDOC_TARGETS = {"md", "html", "txt"}
 LIBREOFFICE_TARGETS = {"pdf", "docx", "odt", "rtf"}
 
+# PDF → Word conversion uses pdf2docx (LibreOffice produces damaged DOCX for this pair)
+PDF2DOCX_TARGETS = {"docx", "doc"}
+
+
+_redis_client_for_health: Any = None
+
 
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
-            body = b'{"status":"ok","service":"document-worker"}'
-            self.send_response(200)
+            checks = {}
+            is_ok = True
+            global _redis_client_for_health
+            if _redis_client_for_health is not None:
+                try:
+                    _redis_client_for_health.ping()
+                    checks["redis"] = "ok"
+                except Exception as exc:
+                    checks["redis"] = f"error: {exc}"
+                    is_ok = False
+            else:
+                try:
+                    import urllib.parse
+                    p = urllib.parse.urlparse(REDIS_URL)
+                    c = redis_lib.Redis(
+                        host=p.hostname or "localhost",
+                        port=p.port or 6379,
+                        password=p.password or None,
+                        socket_connect_timeout=2,
+                        socket_timeout=2,
+                    )
+                    c.ping()
+                    checks["redis"] = "ok"
+                except Exception as exc:
+                    checks["redis"] = f"error: {exc}"
+                    is_ok = False
+
+            status_code = 200 if is_ok else 503
+            body = json.dumps({
+                "status": "ok" if is_ok else "degraded",
+                "service": "document-worker",
+                "checks": checks,
+            }).encode("utf-8")
+            self.send_response(status_code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
         else:
-            self.send_response(404); self.end_headers()
+            self.send_response(404)
+            self.end_headers()
+
     def log_message(self, *args): pass
 
-def _start_health_server(port=9090):
+def _start_health_server(port=9090, redis_client=None):
+    global _redis_client_for_health
+    if redis_client is not None:
+        _redis_client_for_health = redis_client
     threading.Thread(target=HTTPServer(("0.0.0.0", port), _HealthHandler).serve_forever, daemon=True).start()
 
 def handle_shutdown(signum, frame):
@@ -74,7 +118,10 @@ def make_redis():
                                 db=int((p.path or "/0").lstrip("/") or "0"),
                                 password=p.password or None, decode_responses=True,
                                 socket_connect_timeout=5, socket_timeout=30)
-            c.ping(); return c
+            c.ping()
+            global _redis_client_for_health
+            _redis_client_for_health = c
+            return c
         except Exception as e:
             log.warning("redis_retry", attempt=i+1, error=str(e)); time.sleep(2 ** min(i, 4))
     raise RuntimeError("Redis connection failed")
@@ -114,6 +161,31 @@ def convert_with_pandoc(in_path: str, src_fmt: str, tgt_fmt: str, out_path: str)
         raise RuntimeError(f"Pandoc failed: {result.stderr.decode()[:500]}")
 
 
+def convert_pdf_to_docx(in_path: str, out_path: str) -> None:
+    """
+    Convert PDF to DOCX using pdf2docx.
+
+    LibreOffice's built-in PDF→DOCX path produces damaged/unreadable files because
+    it renders PDF pages as images rather than parsing content streams.  pdf2docx
+    parses the actual PDF content (text runs, fonts, tables, images, layout boxes)
+    and reconstructs a proper Word document that opens correctly in Word, Google
+    Docs, and LibreOffice Writer.
+    """
+    try:
+        from pdf2docx import Converter as Pdf2DocxConverter
+    except ImportError as exc:
+        raise RuntimeError(
+            "pdf2docx is not installed. Add 'pdf2docx = \"^0.5.8\"' to pyproject.toml "
+            "and rebuild the container."
+        ) from exc
+
+    cv = Pdf2DocxConverter(in_path)
+    try:
+        cv.convert(out_path, start=0, end=None)
+    finally:
+        cv.close()
+
+
 def process_job(job_data: dict[str, Any]) -> None:
     job_id     = job_data["jobId"]
     source_id  = job_data["sourceFileId"]
@@ -129,8 +201,27 @@ def process_job(job_data: dict[str, Any]) -> None:
 
     s3 = make_s3()
     try:
-        resp = s3.get_object(Bucket=src_bucket, Key=source_id)
-        doc_bytes = resp["Body"].read()
+        try:
+            resp = s3.get_object(Bucket=src_bucket, Key=source_id)
+            doc_bytes = resp["Body"].read()
+        except Exception as get_err:
+            found_bytes = None
+            try:
+                paginator = s3.get_paginator('list_objects_v2')
+                for page in paginator.paginate(Bucket=src_bucket, Prefix="uploads/"):
+                    for obj in page.get("Contents", []):
+                        if source_id in obj["Key"]:
+                            found_resp = s3.get_object(Bucket=src_bucket, Key=obj["Key"])
+                            found_bytes = found_resp["Body"].read()
+                            break
+                    if found_bytes is not None:
+                        break
+            except Exception:
+                pass
+            if found_bytes is not None:
+                doc_bytes = found_bytes
+            else:
+                raise get_err
         post_status(callback, {"status": "processing", "progress": 30, "workerId": WORKER_ID})
 
         with tempfile.TemporaryDirectory() as work_dir:
@@ -140,7 +231,10 @@ def process_job(job_data: dict[str, Any]) -> None:
 
             out_path = os.path.join(work_dir, f"output.{tgt_fmt}")
 
-            if tgt_fmt in PANDOC_TARGETS:
+            # ── PDF → DOCX / DOC: use pdf2docx (LibreOffice produces damaged files) ──
+            if src_fmt == "pdf" and tgt_fmt in PDF2DOCX_TARGETS:
+                convert_pdf_to_docx(in_path, out_path)
+            elif tgt_fmt in PANDOC_TARGETS:
                 convert_with_pandoc(in_path, src_fmt, tgt_fmt, out_path)
             else:
                 out_path = convert_with_libreoffice(in_path, tgt_fmt, work_dir)
@@ -164,16 +258,39 @@ def process_job(job_data: dict[str, Any]) -> None:
 
 
 def run_consumer(redis_client):
-    log.info("consumer_started", queue=QUEUE_KEY)
+    active_key = QUEUE_KEY.replace(":wait", ":active") if ":wait" in QUEUE_KEY else f"{QUEUE_KEY}:active"
+    log.info("consumer_started", queue=QUEUE_KEY, active_queue=active_key)
+
+    # Recover any orphaned jobs from a previous crash
+    try:
+        recovered = 0
+        while True:
+            item = redis_client.rpoplpush(active_key, QUEUE_KEY)
+            if item is None:
+                break
+            recovered += 1
+        if recovered > 0:
+            log.info("recovered_orphaned_jobs", count=recovered, queue=QUEUE_KEY)
+    except Exception as exc:
+        log.warning("orphan_recovery_failed", error=str(exc))
+
     while not _shutdown:
+        raw = None
         try:
-            result = redis_client.brpop(QUEUE_KEY, timeout=5)
-            if result is None: continue
-            _, raw = result
+            raw = redis_client.brpoplpush(QUEUE_KEY, active_key, timeout=5)
+            if raw is None:
+                continue
             try:
-                process_job(json.loads(raw).get("data", {}))
+                envelope = json.loads(raw)
+                process_job(envelope.get("data", {}))
             except json.JSONDecodeError as e:
                 log.error("envelope_parse_error", error=str(e))
+                redis_client.lrem(active_key, 1, raw)
+            finally:
+                try:
+                    redis_client.lrem(active_key, 1, raw)
+                except Exception:
+                    pass
         except redis_lib.exceptions.ConnectionError as e:
             log.error("redis_lost", error=str(e)); time.sleep(5)
         except Exception as e:
@@ -182,7 +299,7 @@ def run_consumer(redis_client):
 
 if __name__ == "__main__":
     log.info("worker_started", service="document-worker", pid=os.getpid())
-    _start_health_server(9090)
     redis_client = make_redis()
+    _start_health_server(9090, redis_client=redis_client)
     run_consumer(redis_client)
     log.info("worker_stopped", service="document-worker")

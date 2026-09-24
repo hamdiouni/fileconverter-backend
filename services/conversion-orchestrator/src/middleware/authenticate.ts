@@ -141,9 +141,7 @@ export async function authenticate(request: FastifyRequest, reply: FastifyReply)
         };
         return;
       } catch {
-        if (process.env.NODE_ENV === 'test' && !request.headers['x-guest-mode']) {
-          return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Invalid or expired token' } });
-        }
+        return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Invalid or expired token' } });
       }
     } else {
       // Check if it's an API key supplied as Bearer <apiKey>
@@ -152,21 +150,32 @@ export async function authenticate(request: FastifyRequest, reply: FastifyReply)
         request.user = apiKeyUser;
         return;
       }
-      if (process.env.NODE_ENV === 'test' && !request.headers['x-guest-mode']) {
-        return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Invalid or expired token' } });
-      }
+      return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Invalid or expired token' } });
     }
   }
 
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    if (process.env.NODE_ENV === 'test' && !request.headers['x-guest-mode']) {
-      return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Missing authorization header' } });
-    }
+  if (authHeader) {
+    return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Invalid authorization header format' } });
   }
 
-  // Guest Mode: Assign guest user session
-  const clientIp = (request.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || request.ip || '127.0.0.1';
-  const guestId = `guest_${clientIp.replace(/[^a-zA-Z0-9]/g, '_')}`;
+  // 3. Guest Mode: Enforce 401 in test environment unless guest header is present
+  const guestHeader = (request.headers['x-guest-id'] || request.headers['x-guest-session-id'] || request.headers['x-guest-mode']) as string | undefined;
+  if (process.env.NODE_ENV === 'test' && !guestHeader) {
+    return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Missing authorization header' } });
+  }
+
+  // Secure Guest Mode: Never use client IP as the identity (prevents NAT/VPN IDOR).
+  // Use client-provided session identifier or generate a cryptographically random UUID.
+  let guestSessionId = typeof guestHeader === 'string' && guestHeader !== 'true' && guestHeader.trim().length > 0
+    ? guestHeader.trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64)
+    : null;
+
+  if (!guestSessionId) {
+    guestSessionId = crypto.randomUUID();
+    reply.header('X-Guest-Id', guestSessionId);
+  }
+
+  const guestId = `guest_${guestSessionId}`;
   request.user = {
     userId: guestId,
     email: `${guestId}@guest.local`,

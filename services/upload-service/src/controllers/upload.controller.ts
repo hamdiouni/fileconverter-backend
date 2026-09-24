@@ -76,7 +76,13 @@ export class UploadController {
   };
 
   getDownloadUrl = async (request: FastifyRequest, reply: FastifyReply) => {
-    const { id } = request.params as { id: string };
+    const params = (request.params || {}) as { id?: string };
+    const query = (request.query || {}) as { id?: string; fileId?: string };
+    const rawId = params.id || query.id || query.fileId;
+    if (!rawId) {
+      return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: 'Missing file id' } });
+    }
+    const id = decodeURIComponent(rawId);
     try {
       const url = await this.uploadService.getDownloadUrl(id, request.user!.userId);
       return reply.status(200).send({ downloadUrl: url, expiresIn: 3600 });

@@ -32,10 +32,15 @@ export class InMemoryPrismaClient {
       return results;
     },
     upsert: async ({ where, create, update }: { where: any; create: any; update: any }) => {
-      // Find existing by stripeSubscriptionId
+      // Find existing by stripeSubscriptionId or userId
       let existing: any = null;
       let existingKey: string | null = null;
       for (const [key, s] of this.subscriptions.entries()) {
+        if (where.userId && s.userId === where.userId) {
+          existing = s;
+          existingKey = key;
+          break;
+        }
         if (where.stripeSubscriptionId && s.stripeSubscriptionId === where.stripeSubscriptionId) {
           existing = s;
           existingKey = key;
@@ -138,14 +143,30 @@ export class InMemoryPrismaClient {
     },
   };
 
+  users: Map<string, any> = new Map();
+
+  user = {
+    update: async ({ where, data }: { where: any; data: any }) => {
+      const u = this.users.get(where.id) ?? { id: where.id, tier: 'free' };
+      const updated = { ...u, ...data, updatedAt: new Date() };
+      this.users.set(where.id, updated);
+      return updated;
+    },
+    findUnique: async ({ where }: { where: any }) => {
+      return this.users.get(where.id) ?? null;
+    },
+  };
+
   $disconnect = async () => {};
   $connect = async () => {};
+  $queryRaw = async (..._args: any[]) => [{ 1: 1 }];
 
   /** Reset all in-memory data (call between tests) */
   reset() {
     this.subscriptions.clear();
     this.invoices.clear();
     this.usageLogs.clear();
+    this.users.clear();
   }
 
   /** Seed a subscription for testing */

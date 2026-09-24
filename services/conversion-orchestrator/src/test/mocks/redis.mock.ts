@@ -63,6 +63,10 @@ export class InMemoryRedis {
     return 'OK';
   }
 
+  async ping(): Promise<string> {
+    return 'PONG';
+  }
+
   /** Reset all data (call between tests) */
   reset() {
     this.store.clear();

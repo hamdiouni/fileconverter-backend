@@ -28,6 +28,11 @@ class TestSelectEngine:
     def test_docx_to_pdf_uses_libreoffice(self):
         assert select_engine("docx", "pdf") == "libreoffice"
 
+    def test_pdf_to_docx_uses_pdf2docx(self):
+        assert select_engine("pdf", "docx") == "pdf2docx"
+        assert select_engine("PDF", "DOCX") == "pdf2docx"
+        assert select_engine("pdf", "doc") == "pdf2docx"
+
     def test_md_to_html_uses_pandoc(self):
         assert select_engine("md", "html") == "pandoc"
 

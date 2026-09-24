@@ -153,6 +153,7 @@ export class InMemoryPrismaClient {
 
   $disconnect = async () => {};
   $connect = async () => {};
+  $queryRaw = async (..._args: any[]) => [{ 1: 1 }];
 
   users: Map<string, any> = new Map();
 

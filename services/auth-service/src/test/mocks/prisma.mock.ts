@@ -47,6 +47,7 @@ export class InMemoryPrismaClient {
         oauthProvider: data.oauthProvider ?? null,
         oauthId: data.oauthId ?? null,
         emailVerified: false,
+        tier: data.tier ?? 'free',
         createdAt: new Date(),
         updatedAt: new Date(),
         deletedAt: null,
@@ -181,6 +182,7 @@ export class InMemoryPrismaClient {
     },
   };
 
+  $queryRaw = async (..._args: any[]) => [{ 1: 1 }];
   $disconnect = async () => {};
   $connect = async () => {};
 

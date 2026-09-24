@@ -3,6 +3,7 @@ Unit tests for FFmpeg audio conversion logic.
 Requirements: 8.3, 8.4
 """
 import pytest
+from unittest.mock import patch, MagicMock
 
 from src.converter import (
     build_ffmpeg_audio_command,
@@ -361,3 +362,44 @@ class TestModels:
         )
         assert result.job_id == "j1"
         assert result.output_size == 1024
+
+
+# ─── Streaming S3 / Memory Safety (MAJ-04) ───────────────────────────────────
+
+class TestAudioStreamingS3:
+    def test_audio_process_job_streams_via_download_and_upload_file(self):
+        import sys
+        for mod in ["redis", "structlog", "boto3"]:
+            if mod not in sys.modules:
+                sys.modules[mod] = MagicMock()
+
+        import src.worker as worker
+
+        mock_s3 = MagicMock()
+        with patch.object(worker, "make_s3", return_value=mock_s3), \
+             patch.object(worker, "post_status"), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)):
+
+            job_data = {
+                "jobId": "test-audio-job-123",
+                "sourceFileId": "uploads/audio-123.wav",
+                "sourceFormat": "wav",
+                "targetFormat": "mp3",
+                "sourceBucket": "test-uploads",
+                "resultBucket": "test-results",
+                "callbackUrl": "http://localhost:3000/callback",
+            }
+
+            worker.process_job(job_data)
+
+            # Verify streaming download to file (not in-memory get_object)
+            assert mock_s3.download_file.called
+            assert mock_s3.download_file.call_args[0][0] == "test-uploads"
+            assert mock_s3.download_file.call_args[0][1] == "uploads/audio-123.wav"
+            assert not mock_s3.get_object.called
+
+            # Verify streaming upload from file (not in-memory put_object)
+            assert mock_s3.upload_file.called
+            assert mock_s3.upload_file.call_args[0][1] == "test-results"
+            assert not mock_s3.put_object.called
+

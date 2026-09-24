@@ -96,4 +96,7 @@ export class InMemoryPrismaClient {
       createdAt: new Date(),
     });
   }
+
+  $queryRaw = async (..._args: any[]) => [{ 1: 1 }];
+  $connect = async () => {};
 }

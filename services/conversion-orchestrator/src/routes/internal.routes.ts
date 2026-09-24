@@ -60,10 +60,10 @@ export async function internalConversionRoutes(fastify: FastifyInstance): Promis
         if (status === 'completed' || status === 'failed') {
           const env = getEnv();
           const eventName = status === 'completed' ? 'conversion.completed' : 'conversion.failed';
-          const targetUrls = new Set<string>();
+          const targets = new Map<string, string | undefined>();
 
           if (job.webhookUrl) {
-            targetUrls.add(job.webhookUrl);
+            targets.set(job.webhookUrl, undefined);
           }
 
           // Query user-registered webhook endpoints subscribed to this event
@@ -83,7 +83,7 @@ export async function internalConversionRoutes(fastify: FastifyInstance): Promis
                   ep.events.includes(eventName)
                 ) {
                   if (ep.url) {
-                    targetUrls.add(ep.url);
+                    targets.set(ep.url, ep.secret);
                   }
                 }
               }
@@ -102,7 +102,7 @@ export async function internalConversionRoutes(fastify: FastifyInstance): Promis
             timestamp: new Date().toISOString(),
           };
 
-          for (const targetUrl of targetUrls) {
+          for (const [targetUrl, targetSecret] of targets.entries()) {
             // Fire-and-forget — the notification-service handles retries
             fetch(`${env.NOTIFICATION_SERVICE_URL}/internal/notifications/webhooks/send`, {
               method: 'POST',
@@ -111,6 +111,7 @@ export async function internalConversionRoutes(fastify: FastifyInstance): Promis
               },
               body: JSON.stringify({
                 webhookUrl: targetUrl,
+                secret: targetSecret,
                 payload,
               }),
             }).catch((err) => fastify.log.error({ err, jobId, webhookUrl: targetUrl }, 'webhook delivery trigger failed'));

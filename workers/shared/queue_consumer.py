@@ -76,26 +76,53 @@ def run_consumer(
     queue_key: str,
     processor: Callable[[dict[str, Any]], None],
     redis_client: redis_lib.Redis,
+    active_key: str | None = None,
 ) -> None:
-    log.info("consumer_started", queue=queue_key)
+    if active_key is None:
+        active_key = queue_key.replace(":wait", ":active") if ":wait" in queue_key else f"{queue_key}:active"
+
+    log.info("consumer_started", queue=queue_key, active_queue=active_key)
+
+    # Recover any orphaned jobs from a previous worker crash
+    try:
+        recovered = 0
+        while True:
+            item = redis_client.rpoplpush(active_key, queue_key)
+            if item is None:
+                break
+            recovered += 1
+        if recovered > 0:
+            log.info("recovered_orphaned_jobs", count=recovered, queue=queue_key)
+    except Exception as exc:
+        log.warning("orphan_recovery_failed", error=str(exc))
+
     while not _shutdown:
+        raw = None
         try:
-            result = redis_client.brpop(queue_key, timeout=5)
-            if result is None:
+            # Atomically move job from wait to active queue
+            raw = redis_client.brpoplpush(queue_key, active_key, timeout=5)
+            if raw is None:
                 continue
 
-            _key, raw = result
             try:
                 envelope = json.loads(raw)
                 job_data = envelope.get("data", {})
             except json.JSONDecodeError as exc:
                 log.error("envelope_parse_error", error=str(exc))
+                # Remove malformed poison pill from active queue
+                redis_client.lrem(active_key, 1, raw)
                 continue
 
             try:
                 processor(job_data)
             except Exception as exc:
                 log.error("job_processor_error", error=str(exc), exc_info=True)
+            finally:
+                # Acknowledge job completion by removing from active queue
+                try:
+                    redis_client.lrem(active_key, 1, raw)
+                except Exception as ack_err:
+                    log.error("job_ack_error", error=str(ack_err))
 
         except redis_lib.exceptions.ConnectionError as exc:
             log.error("redis_connection_lost", error=str(exc))

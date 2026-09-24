@@ -53,94 +53,24 @@ export interface JobFilters {
   pageSize?: number;
 }
 
-/**
- * Valid conversion pairs: sourceFormat → allowed targetFormats
- * Requirements: 5.1, 5.2
- */
-export const VALID_CONVERSIONS: Record<string, string[]> = {
-  // Images
-  png: ['jpg', 'jpeg', 'webp', 'pdf', 'bmp', 'tiff', 'gif'],
-  jpg: ['png', 'webp', 'pdf', 'bmp', 'tiff', 'gif'],
-  jpeg: ['png', 'webp', 'pdf', 'bmp', 'tiff', 'gif'],
-  webp: ['png', 'jpg', 'jpeg', 'pdf', 'bmp', 'tiff'],
-  bmp: ['png', 'jpg', 'jpeg', 'webp', 'pdf'],
-  tiff: ['png', 'jpg', 'jpeg', 'webp', 'pdf'],
-  gif: ['png', 'jpg', 'jpeg', 'webp'],
-  svg: ['png', 'jpg', 'jpeg', 'pdf'],
-  raw: ['jpg', 'jpeg', 'png', 'tiff'],
-  // Documents
-  pdf: ['docx', 'html', 'txt', 'png', 'jpg'],
-  docx: ['pdf', 'html', 'txt', 'odt', 'rtf'],
-  doc: ['pdf', 'html', 'txt', 'odt', 'rtf', 'docx'],
-  odt: ['pdf', 'docx', 'html', 'txt'],
-  rtf: ['pdf', 'docx', 'html', 'txt'],
-  html: ['pdf', 'docx', 'txt', 'md'],
-  txt: ['pdf', 'docx', 'html', 'md'],
-  md: ['html', 'pdf', 'docx'],
-  // Video
-  mp4: ['webm', 'avi', 'mkv', 'mov', 'flv'],
-  webm: ['mp4', 'avi', 'mkv', 'mov'],
-  avi: ['mp4', 'webm', 'mkv', 'mov'],
-  mkv: ['mp4', 'webm', 'avi', 'mov'],
-  mov: ['mp4', 'webm', 'avi', 'mkv'],
-  flv: ['mp4', 'webm', 'avi'],
-  // Audio
-  mp3: ['wav', 'flac', 'aac', 'ogg', 'm4a'],
-  wav: ['mp3', 'flac', 'aac', 'ogg', 'm4a'],
-  flac: ['mp3', 'wav', 'aac', 'ogg'],
-  aac: ['mp3', 'wav', 'flac', 'ogg'],
-  ogg: ['mp3', 'wav', 'flac', 'aac'],
-  m4a: ['mp3', 'wav', 'flac', 'aac'],
-  // Archives
-  zip: ['tar', '7z', 'gz'],
-  tar: ['zip', '7z', 'gz'],
-  '7z': ['zip', 'tar'],
-  gz: ['zip', 'tar'],
-  rar: ['zip', 'tar', '7z'],
-  // Fonts
-  ttf: ['otf', 'woff', 'woff2'],
-  otf: ['ttf', 'woff', 'woff2'],
-  woff: ['ttf', 'otf', 'woff2'],
-  woff2: ['ttf', 'otf', 'woff'],
-};
+export {
+  VALID_CONVERSIONS,
+  FORMAT_FAMILIES,
+  isValidConversion,
+  getFormatFamily,
+} from '../config/format-registry';
 
-/**
- * Format family mapping
- */
-export const FORMAT_FAMILIES: Record<string, FormatFamily> = {
-  jpg: 'image', jpeg: 'image', png: 'image', gif: 'image',
-  webp: 'image', tiff: 'image', bmp: 'image', svg: 'image',
-  raw: 'image', cr2: 'image', nef: 'image', arw: 'image',
-  mp4: 'video', avi: 'video', mov: 'video', mkv: 'video',
-  webm: 'video', flv: 'video', '3gp': 'video', wmv: 'video',
-  mp3: 'audio', wav: 'audio', flac: 'audio', aac: 'audio',
-  ogg: 'audio', m4a: 'audio', wma: 'audio', aiff: 'audio',
-  doc: 'document', docx: 'document', pdf: 'document', txt: 'document',
-  rtf: 'document', odt: 'document', html: 'document', md: 'document',
-  epub: 'document', mobi: 'document',
-  zip: 'archive', rar: 'archive', '7z': 'archive', tar: 'archive',
-  gz: 'archive', bz2: 'archive', xz: 'archive',
-  dwg: 'cad', dxf: 'cad',
-  ttf: 'font', otf: 'font', woff: 'font', woff2: 'font', eot: 'font',
-};
+import {
+  VALID_CONVERSIONS,
+  FORMAT_FAMILIES,
+  isValidConversion,
+  getFormatFamily,
+} from '../config/format-registry';
 
 /**
  * Free tier monthly conversion limit
  */
 const FREE_TIER_MONTHLY_LIMIT = 100;
-
-export function getFormatFamily(format: string): FormatFamily {
-  const normalized = format.toLowerCase().replace(/^\./, '');
-  return FORMAT_FAMILIES[normalized] ?? 'document';
-}
-
-export function isValidConversion(sourceFormat: string, targetFormat: string): boolean {
-  const src = sourceFormat.toLowerCase().trim();
-  const tgt = targetFormat.toLowerCase().trim();
-  const allowed = VALID_CONVERSIONS[src];
-  if (!allowed) return false;
-  return allowed.includes(tgt);
-}
 
 export class ConversionService {
   private queueProducer: QueueProducer;
@@ -261,13 +191,24 @@ export class ConversionService {
       },
     });
 
+    // Resolve source storage key from file_uploads if available
+    let sourceStorageKey = sourceFileId;
+    try {
+      const fileUpload = await (this.prisma as any).fileUpload.findUnique({
+        where: { id: sourceFileId },
+      });
+      if (fileUpload?.storageKey) {
+        sourceStorageKey = fileUpload.storageKey;
+      }
+    } catch {}
+
     // ── Dispatch to the appropriate Python worker via Redis queue ──────────────
     const env = getEnv();
     try {
       await this.queueProducer.enqueue(formatFamily as QueueFormatFamily, {
         jobId: job.id,
         userId,
-        sourceFileId,
+        sourceFileId: sourceStorageKey,
         sourceFormat,
         targetFormat: normalizedTarget,
         options: options ?? {},

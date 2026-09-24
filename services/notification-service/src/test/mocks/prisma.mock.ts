@@ -8,6 +8,30 @@ import { v4 as uuidv4 } from 'uuid';
 export class InMemoryPrismaClient {
   webhookDeliveries: Map<string, any> = new Map();
   emailDeliveries: Map<string, any> = new Map();
+  webhookEndpoints: Map<string, any> = new Map();
+
+  webhookEndpoint = {
+    findFirst: async ({ where }: { where?: any } = {}) => {
+      for (const ep of this.webhookEndpoints.values()) {
+        if (!where) return ep;
+        if (where.userId && ep.userId !== where.userId) continue;
+        if (where.url && ep.url !== where.url) continue;
+        if (where.active !== undefined && ep.active !== where.active) continue;
+        return ep;
+      }
+      return null;
+    },
+    create: async ({ data }: { data: any }) => {
+      const record = {
+        id: uuidv4(),
+        ...data,
+        createdAt: data.createdAt ?? new Date(),
+        updatedAt: new Date(),
+      };
+      this.webhookEndpoints.set(record.id, record);
+      return record;
+    },
+  };
 
   webhookDelivery = {
     findMany: async ({ where, orderBy }: { where?: any; orderBy?: any } = {}) => {
@@ -60,11 +84,13 @@ export class InMemoryPrismaClient {
 
   $disconnect = async () => {};
   $connect = async () => {};
+  $queryRaw = async (..._args: any[]) => [{ 1: 1 }];
 
   /** Reset all in-memory data (call between tests) */
   reset() {
     this.webhookDeliveries.clear();
     this.emailDeliveries.clear();
+    this.webhookEndpoints.clear();
   }
 
   /** Seed a webhook delivery record for testing */

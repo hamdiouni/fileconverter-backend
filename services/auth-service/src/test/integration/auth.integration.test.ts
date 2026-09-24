@@ -25,7 +25,8 @@ import jwt from 'jsonwebtoken';
 import { buildTestApp } from '../helpers/app.helper';
 import type { InMemoryPrismaClient } from '../mocks/prisma.mock';
 import type { InMemoryRedis } from '../mocks/redis.mock';
-import { resetEnvCache } from '../../config/env';
+import { resetEnvCache, getEnv } from '../../config/env';
+import { AuthService } from '../../services/auth.service';
 
 describe('Auth Service Integration Tests', () => {
   let app: FastifyInstance;
@@ -487,6 +488,39 @@ describe('Auth Service Integration Tests', () => {
       const response = await supertest(app.server).get('/health');
       expect(response.status).toBe(200);
       expect(response.body.status).toBe('ok');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Admin Bootstrap & Token Generation (MAJ-02 & MAJ-03)
+  // ---------------------------------------------------------------------------
+  describe('Admin Bootstrap & Admin Token Generation (MAJ-02 & MAJ-03)', () => {
+    it('should bootstrap an admin account and issue JWT with tier: admin', async () => {
+      const authService = new AuthService(prisma as any, redis as any);
+      await authService.bootstrapAdmin('admin@test.com', 'admin_secret_123');
+
+      // Attempt login with the bootstrapped admin credentials
+      const loginRes = await supertest(app.server)
+        .post('/api/v1/auth/login')
+        .send({ email: 'admin@test.com', password: 'admin_secret_123' });
+
+      expect(loginRes.status).toBe(200);
+      expect(loginRes.body.user.tier).toBe('admin');
+
+      // Verify the JWT access token payload contains tier: 'admin'
+      const env = getEnv();
+      const decoded = jwt.verify(loginRes.body.accessToken, env.JWT_ACCESS_SECRET) as any;
+      expect(decoded.tier).toBe('admin');
+      expect(decoded.userId).toBe(loginRes.body.user.id);
+
+      // Verify token refresh preserves tier: 'admin'
+      const refreshRes = await supertest(app.server)
+        .post('/api/v1/auth/refresh')
+        .send({ refreshToken: loginRes.body.refreshToken });
+
+      expect(refreshRes.status).toBe(200);
+      const refreshedDecoded = jwt.verify(refreshRes.body.accessToken, env.JWT_ACCESS_SECRET) as any;
+      expect(refreshedDecoded.tier).toBe('admin');
     });
   });
 });

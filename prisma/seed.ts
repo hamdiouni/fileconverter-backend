@@ -6,26 +6,36 @@
  * Or via:   npx prisma db seed
  */
 import { PrismaClient } from '@prisma/client';
-import crypto from 'crypto';
+import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
-function hashPassword(password: string): string {
-  // Simple SHA-256 hash for seed data (bcrypt not needed in seed)
-  return crypto.createHash('sha256').update(password).digest('hex');
+async function hashPassword(password: string): Promise<string> {
+  return bcrypt.hash(password, 10);
 }
 
 async function main() {
   console.log('🌱 Seeding database...');
 
-  // ── Users (one per tier) ────────────────────────────────────────────────
+  // ── Users (one per tier + admin) ─────────────────────────────────────────
   const users = await Promise.all([
+    prisma.user.upsert({
+      where: { email: process.env.ADMIN_EMAIL || 'admin@fileconverter.io' },
+      update: { tier: 'admin' },
+      create: {
+        email: process.env.ADMIN_EMAIL || 'admin@fileconverter.io',
+        passwordHash: await hashPassword(process.env.ADMIN_PASSWORD || 'admin_dev_password'),
+        emailVerified: true,
+        tier: 'admin',
+        profile: { create: { name: 'System Administrator', company: 'FileConverter Pro' } },
+      },
+    }),
     prisma.user.upsert({
       where: { email: 'free@dev.local' },
       update: {},
       create: {
         email: 'free@dev.local',
-        passwordHash: hashPassword('dev-password-free'),
+        passwordHash: await hashPassword('dev-password-free'),
         emailVerified: true,
         tier: 'free',
         profile: { create: { name: 'Free Dev User', company: 'Dev Co' } },
@@ -44,7 +54,7 @@ async function main() {
       update: {},
       create: {
         email: 'pro@dev.local',
-        passwordHash: hashPassword('dev-password-pro'),
+        passwordHash: await hashPassword('dev-password-pro'),
         emailVerified: true,
         tier: 'pro',
         profile: { create: { name: 'Pro Dev User', company: 'Dev Co' } },
@@ -65,7 +75,7 @@ async function main() {
       update: {},
       create: {
         email: 'business@dev.local',
-        passwordHash: hashPassword('dev-password-biz'),
+        passwordHash: await hashPassword('dev-password-biz'),
         emailVerified: true,
         tier: 'business',
         profile: { create: { name: 'Business Dev User', company: 'Acme Corp' } },

@@ -126,4 +126,6 @@ export class InMemoryPrismaClient {
     this.jobs.set(id, job);
     return job;
   }
+
+  $queryRaw = async (..._args: any[]) => [{ 1: 1 }];
 }

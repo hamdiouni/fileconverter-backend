@@ -13,12 +13,15 @@ export function getHttpClient(): any {
   return httpClient;
 }
 
+import { EmailService } from './email.service';
+
 // Email client factory — injected for testability
 let emailClient: any = null;
 export function setEmailClient(client: any) { emailClient = client; }
 export function getEmailClient(): any {
   if (emailClient) return emailClient;
-  return { send: async () => {} };
+  emailClient = new EmailService();
+  return emailClient;
 }
 
 export interface WebhookPayload {
@@ -40,10 +43,30 @@ export class NotificationService {
     webhookUrl: string,
     payload: WebhookPayload,
     maxRetries = 3,
+    secret?: string,
   ): Promise<{ success: boolean; attempts: number; statusCode?: number }> {
     const env = getEnv();
+    let signingSecret = secret;
+    if (!signingSecret && payload.userId) {
+      try {
+        const endpoint = await (this.prisma as any).webhookEndpoint?.findFirst({
+          where: {
+            userId: payload.userId,
+            url: webhookUrl,
+            active: true,
+          },
+        });
+        if (endpoint?.secret) {
+          signingSecret = endpoint.secret;
+        }
+      } catch {
+        // Fall back to env secret if DB lookup fails
+      }
+    }
+    const activeSecret: string = signingSecret || env.WEBHOOK_HMAC_SECRET || 'secret';
+
     const body = JSON.stringify(payload);
-    const signature = generateHmacSignature(body, env.WEBHOOK_HMAC_SECRET);
+    const signature = generateHmacSignature(body, activeSecret);
     const http = getHttpClient();
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -78,10 +101,17 @@ export class NotificationService {
     type: 'completion' | 'failure',
   ): Promise<void> {
     const emailSvc = getEmailClient();
-    await emailSvc.send({ to, subject, html: body, from: 'noreply@fileconverter.pro' });
-    await (this.prisma as any).emailDelivery.create({
-      data: { to, subject, type, status: 'sent', sentAt: new Date() },
-    });
+    try {
+      await emailSvc.send({ to, subject, html: body });
+      await (this.prisma as any).emailDelivery.create({
+        data: { to, subject, type, status: 'sent', sentAt: new Date() },
+      });
+    } catch (err: any) {
+      await (this.prisma as any).emailDelivery.create({
+        data: { to, subject, type, status: 'failed', sentAt: new Date(), error: err.message },
+      });
+      throw err;
+    }
   }
 
   async getWebhookDeliveries(jobId: string): Promise<any[]> {

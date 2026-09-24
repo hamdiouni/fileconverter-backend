@@ -4,6 +4,7 @@ import { NotificationService } from '../services/notification.service';
 
 const webhookSendSchema = z.object({
   webhookUrl: z.string().url(),
+  secret: z.string().optional(),
   payload: z.object({
     jobId: z.string().min(1),
     status: z.string().min(1),
@@ -44,8 +45,8 @@ export class NotificationController {
         error: { code: 'VALIDATION_ERROR', message: parsed.error.errors[0]?.message },
       });
     }
-    const { webhookUrl, payload, maxRetries } = parsed.data;
-    const result = await this.service.sendWebhook(webhookUrl, payload, maxRetries ?? 3);
+    const { webhookUrl, payload, maxRetries, secret } = parsed.data;
+    const result = await this.service.sendWebhook(webhookUrl, payload, maxRetries ?? 3, secret);
     return reply.status(200).send(result);
   };
 

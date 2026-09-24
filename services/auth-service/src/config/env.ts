@@ -11,17 +11,13 @@ const envSchema = z.object({
   REDIS_URL: z.string().default('redis://localhost:6379'),
   // Google OAuth credentials — required for the /internal/auth/google endpoint.
   // In test environments these may be overridden to dummy values.
-  OAUTH_GOOGLE_CLIENT_ID: z
-    .string()
-    .min(1, 'OAUTH_GOOGLE_CLIENT_ID is required for Google OAuth')
-    .default(''),
-  OAUTH_GOOGLE_CLIENT_SECRET: z
-    .string()
-    .min(1, 'OAUTH_GOOGLE_CLIENT_SECRET is required for Google OAuth')
-    .default(''),
-  OAUTH_GITHUB_CLIENT_ID: z.string().optional(),
-  OAUTH_GITHUB_CLIENT_SECRET: z.string().optional(),
+  OAUTH_GOOGLE_CLIENT_ID: z.string().optional().default(''),
+  OAUTH_GOOGLE_CLIENT_SECRET: z.string().optional().default(''),
+  OAUTH_GITHUB_CLIENT_ID: z.string().optional().default(''),
+  OAUTH_GITHUB_CLIENT_SECRET: z.string().optional().default(''),
   FRONTEND_URL: z.string().default('http://localhost:3000'),
+  ADMIN_EMAIL: z.string().optional().default(''),
+  ADMIN_PASSWORD: z.string().optional().default(''),
 });
 
 export type Env = z.infer<typeof envSchema>;

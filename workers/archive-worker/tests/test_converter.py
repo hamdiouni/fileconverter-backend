@@ -374,3 +374,41 @@ class TestModels:
         opts = ConversionOptions()
         assert opts.quality is None
         assert opts.preserve_metadata is False
+
+
+# ─── Archive Security & Zip Bomb Tests (MAJ-06) ──────────────────────────────
+
+class TestArchiveSecurity:
+    def test_sanitize_entry_name_valid(self):
+        from src.converter import sanitize_entry_name
+        assert sanitize_entry_name("foo/bar.txt") == "foo/bar.txt"
+        assert sanitize_entry_name("foo\\bar\\baz.txt") == "foo/bar/baz.txt"
+        assert sanitize_entry_name("/etc/passwd") == "etc/passwd"
+        assert sanitize_entry_name("C:\\test\\file.txt") == "test/file.txt"
+
+    def test_sanitize_entry_name_blocks_traversal(self):
+        from src.converter import sanitize_entry_name, ArchiveSecurityError
+        with pytest.raises(ArchiveSecurityError):
+            sanitize_entry_name("../../etc/shadow")
+        with pytest.raises(ArchiveSecurityError):
+            sanitize_entry_name("dir/../../../evil.sh")
+        with pytest.raises(ArchiveSecurityError):
+            sanitize_entry_name("..")
+
+    def test_repack_archive_rejects_zip_slip(self):
+        from src.converter import repack_archive, ArchiveSecurityError
+        malicious_zip = make_zip([("../../evil.txt", b"danger")])
+        with pytest.raises(ArchiveSecurityError):
+            repack_archive(malicious_zip, "zip", "tar")
+
+    def test_zip_bomb_ratio_detected(self):
+        from src.converter import validate_archive_safety, ArchiveSecurityError
+        # 100 bytes compressed expanding to 50,000 bytes (500:1 ratio)
+        with pytest.raises(ArchiveSecurityError, match="Suspicious compression ratio"):
+            validate_archive_safety(archive_size=100, total_uncompressed=50000, file_count=1)
+
+    def test_file_count_limit_detected(self):
+        from src.converter import validate_archive_safety, ArchiveSecurityError
+        with pytest.raises(ArchiveSecurityError, match="Archive file count"):
+            validate_archive_safety(archive_size=1000, total_uncompressed=5000, file_count=60000)
+

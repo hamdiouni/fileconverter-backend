@@ -99,6 +99,35 @@ describe('CleanupService.cleanupExpiredFiles (Req 23.1, 23.3)', () => {
     expect(db.expiredIds).toEqual(['file-1', 'file-2']);
   });
 
+  it('deletes associated result files from S3_BUCKET_RESULTS', async () => {
+    const deletedCalls: Array<{ bucket: string; key: string }> = [];
+    const storage: StorageClient = {
+      async deleteObject(bucket: string, key: string) {
+        deletedCalls.push({ bucket, key });
+      },
+    };
+    const files = [
+      {
+        id: 'file-1',
+        storageKey: 'uploads/file-1.png',
+        userId: 'u1',
+        resultKeys: ['results/job-1/out.jpg', 'results/job-1/thumb.jpg'],
+      },
+    ];
+    const db = makeDb(files);
+    const service = new CleanupService(storage, db);
+
+    const result = await service.cleanupExpiredFiles();
+
+    expect(result.deleted).toBe(1);
+    expect(result.errors).toBe(0);
+    expect(deletedCalls).toEqual([
+      { bucket: 'fileconverter-uploads', key: 'uploads/file-1.png' },
+      { bucket: 'fileconverter-results', key: 'results/job-1/out.jpg' },
+      { bucket: 'fileconverter-results', key: 'results/job-1/thumb.jpg' },
+    ]);
+  });
+
   it('counts errors when S3 deletion fails', async () => {
     const storage: StorageClient = {
       async deleteObject() { throw new Error('S3 unavailable'); },

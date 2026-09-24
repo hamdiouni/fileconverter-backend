@@ -28,6 +28,10 @@ const durationHistogram = new Histogram({
   buckets: [0.1, 0.5, 1, 5, 10, 30, 60, 120],
 });
 
+let _prismaClient: any = null;
+let _s3Client: any = null;
+let _metricsServer: http.Server | null = null;
+
 // ─── Metrics HTTP server ──────────────────────────────────────────────────────
 
 function startMetricsServer(port: number) {
@@ -36,8 +40,33 @@ function startMetricsServer(port: number) {
       res.writeHead(200, { 'Content-Type': register.contentType });
       res.end(await register.metrics());
     } else if (_req.url === '/health') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', service: 'cleanup-service' }));
+      const checks: Record<string, 'ok' | 'error'> = {};
+      let isHealthy = true;
+
+      if (_prismaClient) {
+        try {
+          await _prismaClient.$queryRaw`SELECT 1`;
+          checks.database = 'ok';
+        } catch {
+          checks.database = 'error';
+          isHealthy = false;
+        }
+      }
+
+      if (_s3Client) {
+        try {
+          const { ListBucketsCommand } = await import('@aws-sdk/client-s3');
+          await _s3Client.send(new ListBucketsCommand({}));
+          checks.storage = 'ok';
+        } catch {
+          checks.storage = 'error';
+          isHealthy = false;
+        }
+      }
+
+      const statusCode = isHealthy ? 200 : 503;
+      res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: isHealthy ? 'ok' : 'degraded', service: 'cleanup-service', checks }));
     } else {
       res.writeHead(404);
       res.end('Not found');
@@ -46,6 +75,7 @@ function startMetricsServer(port: number) {
   server.listen(port, () => {
     console.log(JSON.stringify({ service: 'cleanup-service', level: 'info', message: `Metrics server listening on :${port}` }));
   });
+  _metricsServer = server;
   return server;
 }
 
@@ -60,6 +90,7 @@ async function main() {
   const { S3Client, DeleteObjectCommand } = await import('@aws-sdk/client-s3');
 
   const prisma = new PrismaClient({ datasources: { db: { url: env.DATABASE_URL } } });
+  _prismaClient = prisma;
   const s3 = new S3Client({
     endpoint: env.S3_ENDPOINT,
     region: env.AWS_REGION,
@@ -69,6 +100,7 @@ async function main() {
     },
     forcePathStyle: true,
   });
+  _s3Client = s3;
 
   const storageClient = {
     async deleteObject(bucket: string, key: string) {
@@ -78,10 +110,25 @@ async function main() {
 
   const dbClient = {
     async getExpiredFiles(now: Date) {
-      return (prisma as any).fileUpload.findMany({
+      const files = await (prisma as any).fileUpload.findMany({
         where: { uploadStatus: 'uploaded', expiresAt: { lt: now } },
-        select: { id: true, storageKey: true, userId: true },
+        select: {
+          id: true,
+          storageKey: true,
+          userId: true,
+          conversionJobs: {
+            select: { resultFileId: true },
+          },
+        },
       });
+      return files.map((f: any) => ({
+        id: f.id,
+        storageKey: f.storageKey,
+        userId: f.userId,
+        resultKeys: f.conversionJobs
+          ? f.conversionJobs.map((j: any) => j.resultFileId).filter(Boolean)
+          : [],
+      }));
     },
     async markFileExpired(fileId: string) {
       await (prisma as any).fileUpload.update({
@@ -90,6 +137,19 @@ async function main() {
       });
     },
     async deleteOldFailedJobs(olderThan: Date) {
+      const jobsWithResults = await (prisma as any).conversionJob.findMany({
+        where: { status: 'failed', createdAt: { lt: olderThan }, resultFileId: { not: null } },
+        select: { resultFileId: true },
+      });
+      for (const job of jobsWithResults) {
+        if (job.resultFileId) {
+          try {
+            await storageClient.deleteObject(env.S3_BUCKET_RESULTS, job.resultFileId);
+          } catch {
+            // Ignore S3 deletion error on old failed jobs
+          }
+        }
+      }
       const result = await (prisma as any).conversionJob.deleteMany({
         where: { status: 'failed', createdAt: { lt: olderThan } },
       });
@@ -148,6 +208,25 @@ async function main() {
 
   startMetricsServer(env.METRICS_PORT);
   console.log(JSON.stringify({ service: 'cleanup-service', level: 'info', message: 'Cleanup service started', scheduleFiles: env.CLEANUP_SCHEDULE_FILES, scheduleDb: env.CLEANUP_SCHEDULE_DB }));
+
+  const shutdown = async (signal: string) => {
+    console.log(JSON.stringify({ service: 'cleanup-service', level: 'info', message: `Received ${signal}, shutting down gracefully...` }));
+    try {
+      if (_metricsServer) {
+        _metricsServer.close();
+      }
+      if (_prismaClient) {
+        await _prismaClient.$disconnect();
+      }
+      process.exit(0);
+    } catch (err) {
+      console.error(JSON.stringify({ service: 'cleanup-service', level: 'error', message: 'Error during shutdown', error: String(err) }));
+      process.exit(1);
+    }
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 main().catch((err) => {

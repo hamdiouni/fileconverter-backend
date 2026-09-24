@@ -58,11 +58,46 @@ WORKER_ID      = f"image-worker-{os.getpid()}"
 
 # ── Health HTTP server ────────────────────────────────────────────────────────
 
+_redis_client_for_health: Any = None
+
+
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
-            body = b'{"status":"ok","service":"image-worker"}'
-            self.send_response(200)
+            checks = {}
+            is_ok = True
+            global _redis_client_for_health
+            if _redis_client_for_health is not None:
+                try:
+                    _redis_client_for_health.ping()
+                    checks["redis"] = "ok"
+                except Exception as exc:
+                    checks["redis"] = f"error: {exc}"
+                    is_ok = False
+            else:
+                try:
+                    import urllib.parse
+                    parsed = urllib.parse.urlparse(REDIS_URL)
+                    c = redis_lib.Redis(
+                        host=parsed.hostname or "localhost",
+                        port=parsed.port or 6379,
+                        password=parsed.password or None,
+                        socket_connect_timeout=2,
+                        socket_timeout=2,
+                    )
+                    c.ping()
+                    checks["redis"] = "ok"
+                except Exception as exc:
+                    checks["redis"] = f"error: {exc}"
+                    is_ok = False
+
+            status_code = 200 if is_ok else 503
+            body = json.dumps({
+                "status": "ok" if is_ok else "degraded",
+                "service": "image-worker",
+                "checks": checks,
+            }).encode("utf-8")
+            self.send_response(status_code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -75,7 +110,10 @@ class _HealthHandler(BaseHTTPRequestHandler):
         pass
 
 
-def _start_health_server(port: int = 9090) -> HTTPServer:
+def _start_health_server(port: int = 9090, redis_client: Any = None) -> HTTPServer:
+    global _redis_client_for_health
+    if redis_client is not None:
+        _redis_client_for_health = redis_client
     server = HTTPServer(("0.0.0.0", port), _HealthHandler)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
@@ -117,6 +155,8 @@ def _make_redis_client() -> redis_lib.Redis:
                 socket_timeout=30,
             )
             client.ping()
+            global _redis_client_for_health
+            _redis_client_for_health = client
             log.info("redis_connected", host=host, port=port)
             return client
         except Exception as exc:
@@ -239,25 +279,46 @@ def process_job(job_data: dict[str, Any], redis_client: redis_lib.Redis) -> None
 # ── Consumer loop ─────────────────────────────────────────────────────────────
 
 def run_consumer(redis_client: redis_lib.Redis) -> None:
-    log.info("consumer_started", queue=QUEUE_KEY, concurrency=WORKER_CONCURRENCY)
+    active_key = QUEUE_KEY.replace(":wait", ":active") if ":wait" in QUEUE_KEY else f"{QUEUE_KEY}:active"
+    log.info("consumer_started", queue=QUEUE_KEY, active_queue=active_key, concurrency=WORKER_CONCURRENCY)
+
+    # Recover any orphaned jobs from a previous crash
+    try:
+        recovered = 0
+        while True:
+            item = redis_client.rpoplpush(active_key, QUEUE_KEY)
+            if item is None:
+                break
+            recovered += 1
+        if recovered > 0:
+            log.info("recovered_orphaned_jobs", count=recovered, queue=QUEUE_KEY)
+    except Exception as exc:
+        log.warning("orphan_recovery_failed", error=str(exc))
+
     while not _shutdown:
+        raw_envelope = None
         try:
-            # BRPOP blocks up to 5 seconds then returns None if nothing arrives
-            result = redis_client.brpop(QUEUE_KEY, timeout=5)
-            if result is None:
+            raw_envelope = redis_client.brpoplpush(QUEUE_KEY, active_key, timeout=5)
+            if raw_envelope is None:
                 continue
 
-            _queue_key, raw_envelope = result
             try:
                 envelope = json.loads(raw_envelope)
                 job_data = envelope.get("data", {})
             except json.JSONDecodeError as exc:
                 log.error("envelope_parse_error", error=str(exc), raw=raw_envelope[:200])
+                redis_client.lrem(active_key, 1, raw_envelope)
                 continue
 
-            # Process synchronously in the single-worker loop.
-            # For higher concurrency, run multiple container replicas.
-            process_job(job_data, redis_client)
+            try:
+                process_job(job_data, redis_client)
+            except Exception as exc:
+                log.error("job_processor_error", error=str(exc), exc_info=True)
+            finally:
+                try:
+                    redis_client.lrem(active_key, 1, raw_envelope)
+                except Exception:
+                    pass
 
         except redis_lib.exceptions.ConnectionError as exc:
             log.error("redis_connection_lost", error=str(exc))
@@ -273,10 +334,10 @@ def run_consumer(redis_client: redis_lib.Redis) -> None:
 
 if __name__ == "__main__":
     log.info("worker_started", service="image-worker", pid=os.getpid())
-    _start_health_server(9090)
+    redis_client = _make_redis_client()
+    _start_health_server(9090, redis_client=redis_client)
     log.info("health_server_started", port=9090)
 
-    redis_client = _make_redis_client()
     run_consumer(redis_client)
 
     log.info("worker_stopped", service="image-worker")

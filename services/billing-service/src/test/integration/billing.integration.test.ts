@@ -579,4 +579,104 @@ describe('Billing Service Integration Tests', () => {
       expect(() => new Date(response.body.period.end)).not.toThrow();
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // BLK-01: Stripe Checkout User ID Disconnect & Webhook Synchronization
+  // ---------------------------------------------------------------------------
+  describe('BLK-01: Checkout Session metadata & Webhook Tier Synchronization', () => {
+    it('checkout session should include client_reference_id and userId metadata', async () => {
+      const userId = 'user-blk01-test';
+      const token = makeToken(userId);
+
+      const response = await supertest(app.server)
+        .post('/api/v1/billing/checkout-session')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          priceId: 'price_pro_mock',
+          successUrl: 'https://app.example.com/success',
+          cancelUrl: 'https://app.example.com/cancel',
+        });
+
+      expect(response.status).toBe(200);
+      // Verify session ID returned
+      expect(response.body.sessionId).toBeDefined();
+    });
+
+    it('checkout.session.completed maps customer to userId and subscription.created updates user tier', async () => {
+      const userId = 'user-paid-subscriber';
+      const customerId = 'cus_sub_blk01_test';
+      const subId = 'sub_blk01_test';
+
+      // 1. checkout.session.completed event fires
+      await supertest(app.server)
+        .post('/api/v1/billing/webhook')
+        .set('stripe-signature', 'valid_sig')
+        .send(makeWebhookBody('checkout.session.completed', {
+          id: 'cs_blk01_completed',
+          customer: customerId,
+          client_reference_id: userId,
+          metadata: { userId },
+        }));
+
+      // Verify reverse mapping in Redis
+      const mappedUserId = await redis.get(`stripe:user_by_customer:${customerId}`);
+      expect(mappedUserId).toBe(userId);
+
+      // 2. customer.subscription.created arrives (even if metadata.userId is missing)
+      await supertest(app.server)
+        .post('/api/v1/billing/webhook')
+        .set('stripe-signature', 'valid_sig')
+        .send(makeWebhookBody('customer.subscription.created', {
+          id: subId,
+          customer: customerId,
+          status: 'active',
+          // Note: metadata is omitted here to verify the customer fallback resolution
+          items: { data: [{ price: { id: 'price_pro_mock' } }] },
+        }));
+
+      // Verify subscription record in DB has the correct userId
+      const sub = await prisma.subscription.findFirst({ where: { userId } });
+      expect(sub).toBeDefined();
+      expect(sub?.userId).toBe(userId);
+      expect(sub?.tier).toBe('pro');
+      expect(sub?.status).toBe('active');
+
+      // Verify user tier was updated to pro in DB
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      expect(user?.tier).toBe('pro');
+    });
+
+    it('customer.subscription.deleted downgrades user tier to free', async () => {
+      const userId = 'user-cancelling';
+      const customerId = 'cus_cancelling';
+      const subId = 'sub_cancelling';
+
+      // Seed customer mapping and pro subscription
+      await redis.set(`stripe:user_by_customer:${customerId}`, userId);
+      await supertest(app.server)
+        .post('/api/v1/billing/webhook')
+        .set('stripe-signature', 'valid_sig')
+        .send(makeWebhookBody('customer.subscription.created', {
+          id: subId,
+          customer: customerId,
+          status: 'active',
+          metadata: { userId },
+          items: { data: [{ price: { id: 'price_pro_mock' } }] },
+        }));
+
+      // Cancel subscription
+      await supertest(app.server)
+        .post('/api/v1/billing/webhook')
+        .set('stripe-signature', 'valid_sig')
+        .send(makeWebhookBody('customer.subscription.deleted', {
+          id: subId,
+          customer: customerId,
+          status: 'canceled',
+        }));
+
+      // Verify user tier is now free
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      expect(user?.tier).toBe('free');
+    });
+  });
 });

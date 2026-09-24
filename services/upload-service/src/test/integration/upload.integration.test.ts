@@ -11,6 +11,8 @@ import type { InMemoryPrismaClient } from '../mocks/prisma.mock';
 import type { InMemoryRedis } from '../mocks/redis.mock';
 import type { InMemoryStorageService } from '../mocks/storage.mock';
 import { resetEnvCache } from '../../config/env';
+import { ClamAVService } from '../../services/clamav.service';
+import { UploadService } from '../../services/upload.service';
 
 function makeToken(userId: string, email: string, tier = 'free'): string {
   return jwt.sign({ userId, email, tier }, process.env.JWT_ACCESS_SECRET!, { expiresIn: '15m' });
@@ -357,6 +359,123 @@ describe('Upload Service Integration Tests', () => {
         .set('Authorization', `Bearer ${token}`)
         .send({ filename: 'file.xyz', contentType: 'application/octet-stream', fileSize: 1024 });
       expect(res.status).toBe(201);
+    });
+  });
+
+  // ─── BLK-02: Security / Auth Guest Session Isolation ───────────────────────
+  describe('BLK-02: Security / Auth Guest Session Isolation & Token Rejection', () => {
+    it('should return 401 for expired or invalid JWT without falling back to guest mode', async () => {
+      const res = await supertest(app.server)
+        .post('/api/v1/uploads')
+        .set('Authorization', 'Bearer invalid.jwt.token')
+        .send({ filename: 'photo.png', contentType: 'image/png', fileSize: 1024 });
+
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('UNAUTHORIZED');
+    });
+
+    it('guest upload with x-guest-mode generates unique guest ID and responds with X-Guest-Id header', async () => {
+      const res = await supertest(app.server)
+        .post('/api/v1/uploads')
+        .set('x-guest-mode', 'true')
+        .set('x-forwarded-for', '203.0.113.195')
+        .send({ filename: 'photo.png', contentType: 'image/png', fileSize: 1024 });
+
+      expect(res.status).toBe(201);
+      expect(res.headers['x-guest-id']).toBeDefined();
+      // Verify storage key does NOT use the raw IP address
+      expect(res.body.storageKey).not.toContain('203_0_113_195');
+      expect(res.body.storageKey).toContain(res.headers['x-guest-id']);
+    });
+
+    it('two guest requests from the same IP are isolated and cannot access each other files', async () => {
+      // Guest A
+      const resA = await supertest(app.server)
+        .post('/api/v1/uploads')
+        .set('x-guest-mode', 'true')
+        .set('x-forwarded-for', '198.51.100.42')
+        .send({ filename: 'confidential_a.pdf', contentType: 'application/pdf', fileSize: 1024 });
+
+      expect(resA.status).toBe(201);
+      const guestIdA = resA.headers['x-guest-id'];
+      const uploadIdA = resA.body.uploadId;
+
+      // Complete upload for Guest A
+      await supertest(app.server)
+        .post(`/api/v1/uploads/${uploadIdA}/complete`)
+        .set('x-guest-id', guestIdA)
+        .send();
+
+      // Guest B from the exact same NAT IP but with distinct session
+      const resB = await supertest(app.server)
+        .post('/api/v1/uploads')
+        .set('x-guest-mode', 'true')
+        .set('x-forwarded-for', '198.51.100.42')
+        .send({ filename: 'confidential_b.pdf', contentType: 'application/pdf', fileSize: 1024 });
+
+      const guestIdB = resB.headers['x-guest-id'];
+      expect(guestIdA).not.toEqual(guestIdB);
+
+      // Guest B tries to download or view Guest A's file -> must return 404 or 403
+      const downloadAttempt = await supertest(app.server)
+        .get(`/api/v1/uploads/${uploadIdA}/download`)
+        .set('x-guest-id', guestIdB);
+
+      expect([403, 404]).toContain(downloadAttempt.status);
+    });
+  });
+
+  // ─── MAJ-07: ClamAV Real Virus Scanning ────────────────────────────────────
+  describe('ClamAV Virus Scanning (MAJ-07)', () => {
+    it('quarantines and marks file infected when ClamAV detects a threat', async () => {
+      const uploadService = new UploadService(prisma as any, redis as any, storage as any);
+
+      const createRes = await supertest(app.server)
+        .post('/api/v1/uploads')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ filename: 'infected-file.pdf', contentType: 'application/pdf', fileSize: 2048 });
+
+      const uploadId = createRes.body.uploadId;
+      const storageKey = createRes.body.storageKey;
+      storage.simulateUpload(storageKey, 2048);
+
+      // Mock ClamAV to return infected
+      jest.spyOn(ClamAVService.prototype, 'scanStream').mockResolvedValueOnce({
+        isInfected: true,
+        virusName: 'Eicar-Test-Signature',
+        rawResponse: 'stream: Eicar-Test-Signature FOUND',
+      });
+
+      await uploadService.scanFile(uploadId, storageKey, 'user-1');
+
+      const fileRecord = await (prisma as any).fileUpload.findUnique({ where: { id: uploadId } });
+      expect(fileRecord?.virusScanStatus).toBe('infected');
+      expect(fileRecord?.uploadStatus).toBe('failed');
+      expect(await storage.fileExists(storageKey)).toBe(false);
+    });
+
+    it('marks file clean when ClamAV reports no threats', async () => {
+      const uploadService = new UploadService(prisma as any, redis as any, storage as any);
+
+      const createRes = await supertest(app.server)
+        .post('/api/v1/uploads')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ filename: 'clean-file.pdf', contentType: 'application/pdf', fileSize: 1024 });
+
+      const uploadId = createRes.body.uploadId;
+      const storageKey = createRes.body.storageKey;
+      storage.simulateUpload(storageKey, 1024);
+
+      // Mock ClamAV to return clean
+      jest.spyOn(ClamAVService.prototype, 'scanStream').mockResolvedValueOnce({
+        isInfected: false,
+        rawResponse: 'stream: OK',
+      });
+
+      await uploadService.scanFile(uploadId, storageKey, 'user-1');
+
+      const fileRecord = await (prisma as any).fileUpload.findUnique({ where: { id: uploadId } });
+      expect(fileRecord?.virusScanStatus).toBe('clean');
     });
   });
 });

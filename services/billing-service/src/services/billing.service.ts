@@ -46,7 +46,8 @@ export class BillingService {
       err.code = 'INVALID_PRICE_ID';
       throw err;
     }
-    const session = await this.stripe.checkout.sessions.create({
+    const existingCustomerId = await this.redis.get(`stripe:customer:${userId}`);
+    const sessionParams: any = {
       ui_mode: 'hosted_page',
       mode: 'subscription',
       billing_address_collection: 'auto',
@@ -67,7 +68,22 @@ export class BillingService {
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: successUrl,
       cancel_url: cancelUrl,
-    });
+      client_reference_id: userId,
+      metadata: {
+        userId,
+      },
+      subscription_data: {
+        metadata: {
+          userId,
+        },
+      },
+    };
+
+    if (existingCustomerId) {
+      sessionParams.customer = existingCustomerId;
+    }
+
+    const session = await this.stripe.checkout.sessions.create(sessionParams);
     return { sessionId: session.id, url: session.url };
   }
 
@@ -101,42 +117,122 @@ export class BillingService {
         const userId = session.metadata?.userId || session.client_reference_id;
         if (session.customer && userId) {
           await this.redis.set(`stripe:customer:${userId}`, session.customer);
+          await this.redis.set(`stripe:user_by_customer:${session.customer}`, userId);
         }
         break;
       }
       case 'customer.subscription.created':
       case 'customer.subscription.updated': {
         const sub = event.data.object;
+        let userId = sub.metadata?.userId;
+        if (!userId && sub.customer) {
+          userId = await this.redis.get(`stripe:user_by_customer:${sub.customer}`);
+        }
+        if (!userId && sub.customer) {
+          const existingSub = await (this.prisma as any).subscription.findFirst({
+            where: { stripeCustomerId: sub.customer },
+            select: { userId: true },
+          });
+          userId = existingSub?.userId;
+        }
+
+        const tier = this.tierFromPriceId(sub.items?.data?.[0]?.price?.id);
+        const periodStart = sub.current_period_start
+          ? new Date(sub.current_period_start * 1000)
+          : new Date();
+        const periodEnd = sub.current_period_end
+          ? new Date(sub.current_period_end * 1000)
+          : new Date();
+
+        const targetUserId = (userId && userId !== 'unknown') ? userId : (sub.metadata?.userId ?? 'unknown');
+
         await (this.prisma as any).subscription.upsert({
-          where: { stripeSubscriptionId: sub.id },
+          where: targetUserId !== 'unknown' ? { userId: targetUserId } : { stripeSubscriptionId: sub.id },
           create: {
-            userId: sub.metadata?.userId ?? 'unknown',
+            userId: targetUserId,
             stripeSubscriptionId: sub.id,
             stripeCustomerId: sub.customer,
-            tier: this.tierFromPriceId(sub.items?.data?.[0]?.price?.id),
+            tier,
             status: sub.status,
+            currentPeriodStart: periodStart,
+            currentPeriodEnd: periodEnd,
           },
           update: {
+            stripeSubscriptionId: sub.id,
+            stripeCustomerId: sub.customer,
+            tier,
             status: sub.status,
-            tier: this.tierFromPriceId(sub.items?.data?.[0]?.price?.id),
+            currentPeriodStart: periodStart,
+            currentPeriodEnd: periodEnd,
           },
         });
+
+        if (targetUserId !== 'unknown') {
+          if (sub.status === 'active' || sub.status === 'trialing') {
+            try {
+              await (this.prisma as any).user.update({
+                where: { id: targetUserId },
+                data: { tier },
+              });
+            } catch {}
+          }
+          await this.redis.del(`user:profile:${targetUserId}`);
+          await this.redis.del(`user:quota:${targetUserId}:conversions`);
+          await this.redis.del(`user:quota:${targetUserId}:api_calls`);
+          await this.redis.del(`user:quota:${targetUserId}:storage`);
+        }
         break;
       }
       case 'customer.subscription.deleted': {
         const sub = event.data.object;
+        let userId = sub.metadata?.userId;
+        if (!userId && sub.customer) {
+          userId = await this.redis.get(`stripe:user_by_customer:${sub.customer}`);
+        }
+        if (!userId) {
+          const existingSub = await (this.prisma as any).subscription.findFirst({
+            where: { stripeSubscriptionId: sub.id },
+            select: { userId: true },
+          });
+          userId = existingSub?.userId;
+        }
+
         await (this.prisma as any).subscription.updateMany({
           where: { stripeSubscriptionId: sub.id },
           data: { status: 'cancelled' },
         });
+
+        if (userId && userId !== 'unknown') {
+          try {
+            await (this.prisma as any).user.update({
+              where: { id: userId },
+              data: { tier: 'free' },
+            });
+          } catch {}
+          await this.redis.del(`user:profile:${userId}`);
+          await this.redis.del(`user:quota:${userId}:conversions`);
+          await this.redis.del(`user:quota:${userId}:api_calls`);
+          await this.redis.del(`user:quota:${userId}:storage`);
+        }
         break;
       }
       case 'invoice.payment_succeeded': {
         const inv = event.data.object;
+        let userId = inv.metadata?.userId;
+        if (!userId && inv.customer) {
+          userId = await this.redis.get(`stripe:user_by_customer:${inv.customer}`);
+        }
+        if (!userId) {
+          const existingSub = await (this.prisma as any).subscription.findFirst({
+            where: { stripeCustomerId: inv.customer },
+            select: { userId: true },
+          });
+          userId = existingSub?.userId ?? 'unknown';
+        }
         await (this.prisma as any).invoice.create({
           data: {
             stripeInvoiceId: inv.id,
-            userId: inv.metadata?.userId ?? 'unknown',
+            userId,
             amount: inv.amount_paid,
             status: 'paid',
           },
@@ -145,10 +241,21 @@ export class BillingService {
       }
       case 'invoice.payment_failed': {
         const inv = event.data.object;
+        let userId = inv.metadata?.userId;
+        if (!userId && inv.customer) {
+          userId = await this.redis.get(`stripe:user_by_customer:${inv.customer}`);
+        }
+        if (!userId) {
+          const existingSub = await (this.prisma as any).subscription.findFirst({
+            where: { stripeCustomerId: inv.customer },
+            select: { userId: true },
+          });
+          userId = existingSub?.userId ?? 'unknown';
+        }
         await (this.prisma as any).invoice.create({
           data: {
             stripeInvoiceId: inv.id,
-            userId: inv.metadata?.userId ?? 'unknown',
+            userId,
             amount: inv.amount_due,
             status: 'failed',
           },
@@ -197,6 +304,17 @@ export class BillingService {
   private async getStripeCustomerId(userId: string): Promise<string> {
     const cached = await this.redis.get(`stripe:customer:${userId}`);
     if (cached) return cached;
+
+    try {
+      const sub = await (this.prisma as any).subscription.findFirst({
+        where: { userId },
+      });
+      if (sub?.stripeCustomerId) {
+        await this.redis.set(`stripe:customer:${userId}`, sub.stripeCustomerId);
+        return sub.stripeCustomerId;
+      }
+    } catch {}
+
     return `cus_mock_${userId}`;
   }
 }

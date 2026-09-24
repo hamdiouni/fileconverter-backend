@@ -25,6 +25,7 @@ export interface AuthTokens {
 export interface AuthUser {
   id: string;
   email: string;
+  tier?: string;
 }
 
 export interface RegisterResult {
@@ -60,7 +61,12 @@ export class AuthService {
     private redis: IORedis,
   ) {}
 
-  private generateTokens(userId: string, email: string): AuthTokens {
+  private generateTokens(
+    userId: string,
+    email: string,
+    tier: string = 'free',
+    permissions: string[] = [],
+  ): AuthTokens {
     const env = getEnv();
 
     const jti = crypto.randomBytes(16).toString('hex');
@@ -69,8 +75,8 @@ export class AuthService {
       {
         userId,
         email,
-        tier: 'free',
-        permissions: [],
+        tier,
+        permissions,
         jti,
       },
       env.JWT_ACCESS_SECRET,
@@ -102,6 +108,36 @@ export class AuthService {
     return new Date(Date.now() + days * 24 * 60 * 60 * 1000);
   }
 
+  /**
+   * Bootstraps the initial admin account if configured in environment.
+   */
+  async bootstrapAdmin(adminEmail?: string, adminPassword?: string): Promise<void> {
+    if (!adminEmail || !adminPassword) return;
+    const email = adminEmail.toLowerCase().trim();
+    if (!email) return;
+
+    const existing = await (this.prisma as any).user.findUnique({ where: { email } });
+    if (!existing) {
+      const passwordHash = await bcrypt.hash(adminPassword, 12);
+      await (this.prisma as any).user.create({
+        data: {
+          email,
+          passwordHash,
+          tier: 'admin',
+          emailVerified: true,
+          profile: {
+            create: { name: 'System Administrator' },
+          },
+        },
+      });
+    } else if (existing.tier !== 'admin') {
+      await (this.prisma as any).user.update({
+        where: { id: existing.id },
+        data: { tier: 'admin' },
+      });
+    }
+  }
+
   async register(input: RegisterInput): Promise<RegisterResult> {
     const { email, password } = input;
 
@@ -128,7 +164,8 @@ export class AuthService {
     });
 
     // Generate tokens
-    const tokens = this.generateTokens(user.id, user.email);
+    const userTier = user.tier ?? 'free';
+    const tokens = this.generateTokens(user.id, user.email, userTier);
 
     // Store refresh token hash
     await (this.prisma as any).refreshToken.create({
@@ -143,12 +180,12 @@ export class AuthService {
     await this.redis.setex(
       `session:${user.id}`,
       15 * 60,
-      JSON.stringify({ email: user.email, tier: 'free', permissions: [] }),
+      JSON.stringify({ email: user.email, tier: userTier, permissions: [] }),
     );
 
     return {
       ...tokens,
-      user: { id: user.id, email: user.email },
+      user: { id: user.id, email: user.email, tier: userTier },
     };
   }
 
@@ -173,7 +210,8 @@ export class AuthService {
     }
 
     // Generate tokens
-    const tokens = this.generateTokens(user.id, user.email);
+    const userTier = user.tier ?? 'free';
+    const tokens = this.generateTokens(user.id, user.email, userTier);
 
     // Store new refresh token
     await (this.prisma as any).refreshToken.create({
@@ -188,12 +226,12 @@ export class AuthService {
     await this.redis.setex(
       `session:${user.id}`,
       15 * 60,
-      JSON.stringify({ email: user.email, tier: 'free', permissions: [] }),
+      JSON.stringify({ email: user.email, tier: userTier, permissions: [] }),
     );
 
     return {
       ...tokens,
-      user: { id: user.id, email: user.email },
+      user: { id: user.id, email: user.email, tier: userTier },
     };
   }
 
@@ -240,7 +278,12 @@ export class AuthService {
     // Rotate: delete old token, generate new pair
     await (this.prisma as any).refreshToken.delete({ where: { id: stored.id } });
 
-    const newTokens = this.generateTokens(payload.userId, payload.email);
+    const user = await (this.prisma as any).user.findUnique({
+      where: { id: payload.userId },
+    });
+    const userTier = user?.tier ?? 'free';
+
+    const newTokens = this.generateTokens(payload.userId, payload.email, userTier);
 
     await (this.prisma as any).refreshToken.create({
       data: {
@@ -249,6 +292,12 @@ export class AuthService {
         expiresAt: this.getRefreshTokenExpiry(),
       },
     });
+
+    await this.redis.setex(
+      `session:${payload.userId}`,
+      15 * 60,
+      JSON.stringify({ email: payload.email, tier: userTier, permissions: [] }),
+    );
 
     return newTokens;
   }
@@ -311,7 +360,8 @@ export class AuthService {
     }
 
     // 4. Issue FileConverter JWT pair (same as email/password login path)
-    const tokens = this.generateTokens(user.id, user.email);
+    const userTier = user.tier ?? 'free';
+    const tokens = this.generateTokens(user.id, user.email, userTier);
 
     await (this.prisma as any).refreshToken.create({
       data: {
@@ -324,10 +374,10 @@ export class AuthService {
     await this.redis.setex(
       `session:${user.id}`,
       15 * 60,
-      JSON.stringify({ email: user.email, tier: user.tier ?? 'free', permissions: [] }),
+      JSON.stringify({ email: user.email, tier: userTier, permissions: [] }),
     );
 
-    return { ...tokens, user: { id: user.id, email: user.email } };
+    return { ...tokens, user: { id: user.id, email: user.email, tier: userTier } };
   }
 
   async handleOAuthCallback(
@@ -370,7 +420,8 @@ export class AuthService {
 
     void oauthId; // suppress unused variable
 
-    const tokens = this.generateTokens(user.id, user.email);
+    const userTier = user.tier ?? 'free';
+    const tokens = this.generateTokens(user.id, user.email, userTier);
 
     await (this.prisma as any).refreshToken.create({
       data: {
@@ -383,10 +434,10 @@ export class AuthService {
     await this.redis.setex(
       `session:${user.id}`,
       15 * 60,
-      JSON.stringify({ email: user.email, tier: 'free', permissions: [] }),
+      JSON.stringify({ email: user.email, tier: userTier, permissions: [] }),
     );
 
-    return { ...tokens, user: { id: user.id, email: user.email } };
+    return { ...tokens, user: { id: user.id, email: user.email, tier: userTier } };
   }
 
   async generateApiKey(

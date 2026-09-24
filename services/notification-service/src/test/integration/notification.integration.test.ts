@@ -198,6 +198,73 @@ describe('Notification Service Integration Tests', () => {
       expect(capturedHeaders['X-Signature']).toMatch(/^sha256=[a-f0-9]{64}$/);
     });
 
+    it('should sign webhook using per-endpoint secret when provided explicitly', async () => {
+      const capturedHeaders: Record<string, string> = {};
+      let capturedBody = '';
+      const mockHttp = {
+        post: jest.fn().mockImplementation(async (_url: string, body: string, opts: any) => {
+          capturedBody = body;
+          Object.assign(capturedHeaders, opts.headers);
+          return { status: 200 };
+        }),
+      };
+      setHttpClient(mockHttp);
+      const token = makeToken('user-endpoint-secret');
+      const customSecret = 'whsec_explicit_custom_key_999';
+
+      const payload = { jobId: 'job-custom-sec-01', status: 'completed', userId: 'user-endpoint-secret' };
+      await supertest(app.server)
+        .post('/api/v1/notifications/webhooks/send')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          webhookUrl: WEBHOOK_URL,
+          secret: customSecret,
+          payload,
+        });
+
+      const expectedSig = `sha256=${generateHmacSignature(capturedBody, customSecret)}`;
+      expect(capturedHeaders['X-Signature']).toBe(expectedSig);
+      expect(capturedHeaders['X-FileConverter-Signature']).toBe(expectedSig);
+    });
+
+    it('should query and use endpoint secret from DB when not provided in request', async () => {
+      const capturedHeaders: Record<string, string> = {};
+      let capturedBody = '';
+      const mockHttp = {
+        post: jest.fn().mockImplementation(async (_url: string, body: string, opts: any) => {
+          capturedBody = body;
+          Object.assign(capturedHeaders, opts.headers);
+          return { status: 200 };
+        }),
+      };
+      setHttpClient(mockHttp);
+
+      const dbSecret = 'whsec_database_stored_key_888';
+      await prisma.webhookEndpoint.create({
+        data: {
+          userId: 'user-db-hook',
+          url: WEBHOOK_URL,
+          secret: dbSecret,
+          active: true,
+        },
+      });
+
+      const token = makeToken('user-db-hook');
+      const payload = { jobId: 'job-db-sec-01', status: 'completed', userId: 'user-db-hook' };
+
+      await supertest(app.server)
+        .post('/api/v1/notifications/webhooks/send')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          webhookUrl: WEBHOOK_URL,
+          payload,
+        });
+
+      const expectedSig = `sha256=${generateHmacSignature(capturedBody, dbSecret)}`;
+      expect(capturedHeaders['X-Signature']).toBe(expectedSig);
+      expect(capturedHeaders['X-FileConverter-Signature']).toBe(expectedSig);
+    });
+
     it('should return 400 when webhookUrl is missing', async () => {
       const token = makeToken('user-webhook-1');
       const response = await supertest(app.server)

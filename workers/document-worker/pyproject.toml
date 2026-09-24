@@ -13,6 +13,7 @@ pydantic = "^2.6.0"
 pydantic-settings = "^2.1.0"
 structlog = "^24.1.0"
 prometheus-client = "^0.20.0"
+pdf2docx = "^0.5.8"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.1.0"

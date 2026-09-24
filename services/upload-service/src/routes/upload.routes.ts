@@ -12,6 +12,7 @@ export async function uploadRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.post('/api/v1/uploads/:id/complete', { preHandler: authenticate }, ctrl.completeUpload);
   fastify.get('/api/v1/uploads/:id', { preHandler: authenticate }, ctrl.getFile);
   fastify.delete('/api/v1/uploads/:id', { preHandler: authenticate }, ctrl.deleteFile);
+  fastify.get('/api/v1/uploads/download', { preHandler: authenticate }, ctrl.getDownloadUrl);
   fastify.get('/api/v1/uploads/:id/download', { preHandler: authenticate }, ctrl.getDownloadUrl);
   fastify.post('/api/v1/uploads/multipart', { preHandler: authenticate }, ctrl.initiateMultipart);
   fastify.post('/api/v1/uploads/multipart/:id/complete', { preHandler: authenticate }, ctrl.completeMultipart);

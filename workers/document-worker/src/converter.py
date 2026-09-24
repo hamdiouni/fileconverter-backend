@@ -1,5 +1,5 @@
 """
-Document conversion logic using LibreOffice and Pandoc.
+Document conversion logic using LibreOffice, Pandoc, and pdf2docx.
 Requirements: 9.1, 9.2, 9.3, 9.4, 9.5
 """
 from __future__ import annotations
@@ -25,6 +25,12 @@ LIBREOFFICE_ONLY = {"doc", "rtf", "ppt", "pptx", "odp", "xls", "xlsx", "ods", "c
 PANDOC_PREFERRED_SOURCES = {"md", "markdown", "rst", "tex", "latex", "epub"}
 PANDOC_PREFERRED_TARGETS = {"md", "markdown", "rst", "tex", "latex", "epub", "html"}
 
+# Format pairs that must use pdf2docx (LibreOffice PDF→DOCX produces damaged files)
+PDF2DOCX_PAIRS = {
+    ("pdf", "docx"),
+    ("pdf", "doc"),
+}
+
 
 class DocumentConversionError(Exception):
     pass
@@ -41,11 +47,15 @@ class ConversionTimeoutError(DocumentConversionError):
 def select_engine(source_format: str, target_format: str) -> str:
     """
     Select the best conversion engine for a source->target format pair.
-    Returns 'libreoffice' or 'pandoc'.
+    Returns 'libreoffice', 'pandoc', or 'pdf2docx'.
     Requirements: 9.1, 9.2, 9.3
     """
     src = source_format.lower().strip()
     tgt = target_format.lower().strip()
+
+    # pdf2docx produces proper DOCX from PDF — LibreOffice is broken for this pair
+    if (src, tgt) in PDF2DOCX_PAIRS:
+        return "pdf2docx"
 
     # LibreOffice-only formats must use LibreOffice
     if src in LIBREOFFICE_ONLY or tgt in LIBREOFFICE_ONLY:
@@ -156,7 +166,7 @@ def estimate_conversion_time_seconds(
     """
     engine = select_engine(source_format, target_format)
 
-    if engine == "libreoffice":
+    if engine in ("libreoffice", "pdf2docx"):
         pages = page_count or max(1, file_size_bytes // 50_000)
         return max(1, pages // 2)
     else:

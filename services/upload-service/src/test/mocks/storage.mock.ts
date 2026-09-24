@@ -23,9 +23,18 @@ export class InMemoryStorageService implements StorageService {
     return this.files.get(key)?.size ?? 0;
   }
 
+  async getFileStream(_key: string): Promise<import('stream').Readable> {
+    const { Readable } = await import('stream');
+    return Readable.from([Buffer.from('clean-sample-content')]);
+  }
+
   /** Simulate a file being uploaded directly to storage */
   simulateUpload(key: string, size: number): void {
     this.files.set(key, { size });
+  }
+
+  async ping(): Promise<boolean> {
+    return true;
   }
 
   reset() { this.files.clear(); }

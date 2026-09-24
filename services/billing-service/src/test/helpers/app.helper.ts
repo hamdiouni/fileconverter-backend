@@ -65,8 +65,38 @@ export async function buildTestApp(): Promise<TestApp> {
   // Register routes
   await fastify.register(billingRoutes);
 
-  // Health check
-  fastify.get('/health', async () => ({ status: 'ok', service: 'billing-service' }));
+  // Health check with deep dependency probes
+  fastify.get('/health', async (_req, reply) => {
+    const checks: Record<string, 'ok' | 'error'> = {};
+    let isHealthy = true;
+
+    try {
+      if (typeof (fastify.prisma as any)?.$queryRaw === 'function') {
+        await (fastify.prisma as any).$queryRaw`SELECT 1`;
+      }
+      checks.database = 'ok';
+    } catch {
+      checks.database = 'error';
+      isHealthy = false;
+    }
+
+    try {
+      if (typeof (fastify.redis as any)?.ping === 'function') {
+        await (fastify.redis as any).ping();
+      }
+      checks.redis = 'ok';
+    } catch {
+      checks.redis = 'error';
+      isHealthy = false;
+    }
+
+    const statusCode = isHealthy ? 200 : 503;
+    return reply.status(statusCode).send({
+      status: isHealthy ? 'ok' : 'degraded',
+      service: 'billing-service',
+      checks,
+    });
+  });
 
   await fastify.ready();
 

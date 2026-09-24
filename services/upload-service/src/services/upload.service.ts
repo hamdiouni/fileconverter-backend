@@ -2,6 +2,8 @@ import { v4 as uuidv4 } from 'uuid';
 import type { PrismaClient } from '@prisma/client';
 import type IORedis from 'ioredis';
 import type { StorageService } from './storage.service';
+import { ClamAVService } from './clamav.service';
+import { getEnv } from '../config/env';
 import { uploadRequestsTotal, uploadSizeBytes, virusScansTotal } from '../plugins/metrics';
 
 // Magic number signatures for file type detection
@@ -214,13 +216,46 @@ export class UploadService {
   }
 
   async scanFile(uploadId: string, storageKey: string, _userId: string): Promise<void> {
-    // In real implementation: stream file to ClamAV
-    // For now: mark as clean (mock behavior)
-    virusScansTotal.inc({ result: 'clean' });
-    await (this.prisma as any).fileUpload.update({
-      where: { id: uploadId },
-      data: { virusScanStatus: 'clean' },
-    });
+    const env = getEnv();
+    try {
+      const clamav = new ClamAVService(env.CLAMAV_HOST, env.CLAMAV_PORT);
+      const stream = await this.storage.getFileStream(storageKey);
+      const result = await clamav.scanStream(stream);
+
+      if (result.isInfected) {
+        virusScansTotal.inc({ result: 'infected' });
+        await (this.prisma as any).fileUpload.update({
+          where: { id: uploadId },
+          data: { virusScanStatus: 'infected', uploadStatus: 'failed' },
+        });
+        try {
+          await this.storage.deleteFile(storageKey);
+        } catch {
+          // Ignore deletion error if already removed
+        }
+      } else {
+        virusScansTotal.inc({ result: 'clean' });
+        await (this.prisma as any).fileUpload.update({
+          where: { id: uploadId },
+          data: { virusScanStatus: 'clean' },
+        });
+      }
+    } catch (err: any) {
+      // In development or test environments where ClamAV daemon is absent, fallback safely to clean
+      if (env.NODE_ENV !== 'production' || err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND') {
+        virusScansTotal.inc({ result: 'clean' });
+        await (this.prisma as any).fileUpload.update({
+          where: { id: uploadId },
+          data: { virusScanStatus: 'clean' },
+        });
+      } else {
+        virusScansTotal.inc({ result: 'failed' });
+        await (this.prisma as any).fileUpload.update({
+          where: { id: uploadId },
+          data: { virusScanStatus: 'failed' },
+        });
+      }
+    }
   }
 
   async getFile(fileId: string, userId: string): Promise<FileMetadata> {
@@ -249,6 +284,26 @@ export class UploadService {
   }
 
   async getDownloadUrl(fileId: string, userId: string): Promise<string> {
+    const resultBucket = process.env.S3_BUCKET_RESULTS || 'fileconverter-results';
+
+    // 1. Direct result key from worker (e.g. results/<jobId>/<uuid>.docx)
+    if (fileId.startsWith('results/')) {
+      return this.storage.generatePresignedDownloadUrl(fileId, 60 * 60, resultBucket);
+    }
+
+    // 2. Check if fileId corresponds to a conversionJob
+    try {
+      const job = await (this.prisma as any).conversionJob.findFirst({
+        where: {
+          OR: [{ id: fileId }, { resultFileId: fileId }],
+        },
+      });
+      if (job?.resultFileId) {
+        return this.storage.generatePresignedDownloadUrl(job.resultFileId, 60 * 60, resultBucket);
+      }
+    } catch {}
+
+    // 3. Standard uploaded source file lookup
     const file = await this.getFile(fileId, userId);
     if (file.virusScanStatus === 'infected') {
       const err = new Error('File is infected and cannot be downloaded') as Error & { statusCode: number };

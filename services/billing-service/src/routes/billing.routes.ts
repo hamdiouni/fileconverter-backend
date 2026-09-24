@@ -21,6 +21,11 @@ export async function billingRoutes(fastify: FastifyInstance) {
     { preHandler: authenticate },
     controller.createPortalSession,
   );
+  fastify.post(
+    '/api/v1/billing/portal',
+    { preHandler: authenticate },
+    controller.createPortalSession,
+  );
   fastify.post('/api/v1/billing/webhook', controller.handleWebhook);
   fastify.get(
     '/api/v1/billing/usage',

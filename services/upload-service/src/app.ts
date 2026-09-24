@@ -24,7 +24,48 @@ export async function buildApp(options?: { logger?: boolean }): Promise<FastifyI
   (fastify as any).storage = storage;
 
   await fastify.register(uploadRoutes);
-  fastify.get('/health', async () => ({ status: 'ok', service: 'upload-service' }));
+  fastify.get('/health', async (_req, reply) => {
+    const checks: Record<string, 'ok' | 'error'> = {};
+    let isHealthy = true;
+
+    try {
+      if (typeof (fastify.prisma as any)?.$queryRaw === 'function') {
+        await (fastify.prisma as any).$queryRaw`SELECT 1`;
+      }
+      checks.database = 'ok';
+    } catch {
+      checks.database = 'error';
+      isHealthy = false;
+    }
+
+    try {
+      if (typeof (fastify.redis as any)?.ping === 'function') {
+        await (fastify.redis as any).ping();
+      }
+      checks.redis = 'ok';
+    } catch {
+      checks.redis = 'error';
+      isHealthy = false;
+    }
+
+    try {
+      if (typeof (fastify as any).storage?.ping === 'function') {
+        const ok = await (fastify as any).storage.ping();
+        if (!ok) throw new Error('Storage ping failed');
+      }
+      checks.storage = 'ok';
+    } catch {
+      checks.storage = 'error';
+      isHealthy = false;
+    }
+
+    const statusCode = isHealthy ? 200 : 503;
+    return reply.status(statusCode).send({
+      status: isHealthy ? 'ok' : 'degraded',
+      service: 'upload-service',
+      checks,
+    });
+  });
 
   return fastify;
 }

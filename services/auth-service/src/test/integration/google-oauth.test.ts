@@ -45,6 +45,7 @@ describe('Google OAuth Internal Route Tests (POST /internal/auth/google)', () =>
     expect(response.body.user).toEqual({
       id: expect.any(String),
       email: 'googler@example.com',
+      tier: 'free',
     });
 
     // Verify the JWT was signed with the FileConverter JWT secret, NOT a raw Google token
@@ -52,6 +53,7 @@ describe('Google OAuth Internal Route Tests (POST /internal/auth/google)', () =>
     const decoded = jwt.verify(response.body.accessToken, env.JWT_ACCESS_SECRET) as any;
     expect(decoded.userId).toBe(response.body.user.id);
     expect(decoded.email).toBe('googler@example.com');
+    expect(decoded.tier).toBe('free');
   });
 
   it('links to existing user account if email matches', async () => {

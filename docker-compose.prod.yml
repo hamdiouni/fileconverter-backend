@@ -1,5 +1,3 @@
-version: "3.9"
-
 # FileConverter Pro - Production Environment
 # Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 # Overrides: resource limits, replicas, restart policies, health-check thresholds
@@ -67,6 +65,7 @@ services:
 
   clamav:
     <<: *service-defaults
+    image: clamav/clamav:latest
     deploy:
       resources:
         limits:
@@ -75,6 +74,9 @@ services:
         reservations:
           cpus: "0.5"
           memory: 512M
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "clamdcheck.sh"]
 
   # ─────────────────────────────────────────────
   # API Services
@@ -223,6 +225,21 @@ services:
       <<: *healthcheck-defaults
       test: ["CMD", "wget", "-qO-", "http://localhost:3006/health"]
 
+  cleanup-service:
+    <<: *service-defaults
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/health"]
+
   # ─────────────────────────────────────────────
   # Conversion Workers
   # ─────────────────────────────────────────────
@@ -320,7 +337,7 @@ services:
     environment:
       - WORKER_CONCURRENCY=${ARCHIVE_WORKER_CONCURRENCY:-2}
 
-  cad-worker:
+  cad-font-worker:
     <<: *service-defaults
     deploy:
       replicas: ${CAD_WORKER_REPLICAS:-1}

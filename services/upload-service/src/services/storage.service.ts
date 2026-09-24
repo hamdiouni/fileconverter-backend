@@ -4,10 +4,12 @@
  */
 export interface StorageService {
   generatePresignedUploadUrl(key: string, contentType: string, expiresIn: number): Promise<string>;
-  generatePresignedDownloadUrl(key: string, expiresIn: number): Promise<string>;
+  generatePresignedDownloadUrl(key: string, expiresIn: number, bucketName?: string): Promise<string>;
   fileExists(key: string): Promise<boolean>;
   deleteFile(key: string): Promise<void>;
   getFileSize(key: string): Promise<number>;
+  getFileStream(key: string): Promise<import('stream').Readable>;
+  ping?(): Promise<boolean>;
 }
 
 export class S3StorageService implements StorageService {
@@ -66,11 +68,12 @@ export class S3StorageService implements StorageService {
     return getSignedUrl(s3, new PutObjectCommand({ Bucket: this.bucket, Key: key }), { expiresIn });
   }
 
-  async generatePresignedDownloadUrl(key: string, expiresIn: number): Promise<string> {
+  async generatePresignedDownloadUrl(key: string, expiresIn: number, bucketName?: string): Promise<string> {
     const { getSignedUrl } = await import('@aws-sdk/s3-request-presigner');
     const { GetObjectCommand } = await import('@aws-sdk/client-s3');
     const s3 = await this.getPublicS3();
-    return getSignedUrl(s3, new GetObjectCommand({ Bucket: this.bucket, Key: key }), { expiresIn });
+    const bucket = bucketName || this.bucket;
+    return getSignedUrl(s3, new GetObjectCommand({ Bucket: bucket, Key: key }), { expiresIn });
   }
 
   async fileExists(key: string): Promise<boolean> {
@@ -95,5 +98,23 @@ export class S3StorageService implements StorageService {
     const s3 = await this.getS3();
     const result = await s3.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
     return result.ContentLength ?? 0;
+  }
+
+  async getFileStream(key: string): Promise<import('stream').Readable> {
+    const { GetObjectCommand } = await import('@aws-sdk/client-s3');
+    const s3 = await this.getS3();
+    const result = await s3.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
+    return result.Body as import('stream').Readable;
+  }
+
+  async ping(): Promise<boolean> {
+    try {
+      const { HeadBucketCommand } = await import('@aws-sdk/client-s3');
+      const s3 = await this.getS3();
+      await s3.send(new HeadBucketCommand({ Bucket: this.bucket }));
+      return true;
+    } catch {
+      return false;
+    }
   }
 }

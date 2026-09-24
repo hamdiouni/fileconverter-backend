@@ -28,7 +28,6 @@ services:
 
   postgres:
     image: postgres:16-alpine
-    container_name: fc_postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-fileconverter}
@@ -49,7 +48,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: fc_redis
     restart: unless-stopped
     command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_dev_password}
     ports:
@@ -66,7 +64,6 @@ services:
 
   minio:
     image: quay.io/minio/minio:latest
-    container_name: fc_minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
@@ -89,7 +86,6 @@ services:
   # Create MinIO buckets on first boot
   minio-init:
     image: quay.io/minio/mc:latest
-    container_name: fc_minio_init
     depends_on:
       minio:
         condition: service_healthy
@@ -107,7 +103,6 @@ services:
 
   mailhog:
     image: mailhog/mailhog:latest
-    container_name: fc_mailhog
     restart: unless-stopped
     ports:
       - "${MAILHOG_SMTP_PORT:-1025}:1025"
@@ -115,10 +110,23 @@ services:
     networks:
       - fileconverter-net
 
+  clamav:
+    image: clamav/clamav:latest
+    restart: unless-stopped
+    ports:
+      - "${CLAMAV_PORT:-3310}:3310"
+    networks:
+      - fileconverter-net
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
   # DB migration – runs once, then exits
   db-migrate:
     image: node:20-alpine
-    container_name: fc_db_migrate
     depends_on:
       postgres:
         condition: service_healthy
@@ -133,8 +141,8 @@ services:
       sh -c "
         apk add --no-cache openssl 2>/dev/null;
         npm install -g prisma@5 --silent 2>/dev/null;
-        prisma db push --accept-data-loss;
-        echo 'Database schema applied';
+        prisma migrate deploy;
+        echo 'Database migrations successfully applied';
       "
     restart: on-failure
 
@@ -146,7 +154,6 @@ services:
     build:
       context: .
       dockerfile: ./services/api-gateway/Dockerfile
-    container_name: fc_api_gateway
     restart: unless-stopped
     ports:
       - "${GATEWAY_HTTP_PORT:-80}:80"
@@ -175,7 +182,6 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    container_name: fc_frontend
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-8080}:8080"
@@ -188,7 +194,7 @@ services:
       - NEXT_PUBLIC_SITE_URL=http://localhost:8080
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-466195313627-mf3t35danp4mqqq4d5vq8h6k2qdpclql.apps.googleusercontent.com}
       - NEXT_PUBLIC_GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-466195313627-mf3t35danp4mqqq4d5vq8h6k2qdpclql.apps.googleusercontent.com}
-      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-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}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
       - AUTH_SERVICE_INTERNAL_URL=http://auth-service:3000
     networks:
       - fileconverter-net
@@ -209,7 +215,6 @@ services:
     build:
       context: .
       dockerfile: ./services/auth-service/Dockerfile
-    container_name: fc_auth_service
     restart: unless-stopped
     depends_on:
       postgres:
@@ -228,6 +233,8 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_password}@redis:6379
       OAUTH_GOOGLE_CLIENT_ID: ${OAUTH_GOOGLE_CLIENT_ID:-}
       OAUTH_GOOGLE_CLIENT_SECRET: ${OAUTH_GOOGLE_CLIENT_SECRET:-}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@fileconverter.io}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
       interval: 10s
@@ -239,7 +246,6 @@ services:
     build:
       context: .
       dockerfile: ./services/user-service/Dockerfile
-    container_name: fc_user_service
     restart: unless-stopped
     depends_on:
       postgres:
@@ -267,7 +273,6 @@ services:
     build:
       context: .
       dockerfile: ./services/upload-service/Dockerfile
-    container_name: fc_upload_service
     restart: unless-stopped
     depends_on:
       postgres:
@@ -290,6 +295,8 @@ services:
       S3_ENDPOINT: http://minio:9000
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin_dev}
+      CLAMAV_HOST: ${CLAMAV_HOST:-clamav}
+      CLAMAV_PORT: ${CLAMAV_PORT:-3310}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3002/health"]
       interval: 10s
@@ -301,7 +308,6 @@ services:
     build:
       context: .
       dockerfile: ./services/conversion-orchestrator/Dockerfile
-    container_name: fc_orchestrator_service
     restart: unless-stopped
     depends_on:
       postgres:
@@ -334,7 +340,6 @@ services:
     build:
       context: .
       dockerfile: ./services/billing-service/Dockerfile
-    container_name: fc_billing_service
     restart: unless-stopped
     depends_on:
       postgres:
@@ -359,7 +364,6 @@ services:
     build:
       context: .
       dockerfile: ./services/notification-service/Dockerfile
-    container_name: fc_notification_service
     restart: unless-stopped
     depends_on:
       postgres:
@@ -390,7 +394,6 @@ services:
     build:
       context: .
       dockerfile: ./services/admin-service/Dockerfile
-    container_name: fc_admin_service
     restart: unless-stopped
     depends_on:
       postgres:
@@ -414,6 +417,43 @@ services:
       retries: 5
       start_period: 15s
 
+  cleanup-service:
+    build:
+      context: .
+      dockerfile: ./services/cleanup-service/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    networks:
+      - fileconverter-net
+    env_file: .env
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-fileconverter}:${POSTGRES_PASSWORD:-fileconverter_dev}@postgres:5432/${POSTGRES_DB:-fileconverter}
+      S3_ENDPOINT: http://minio:9000
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin_dev}
+      S3_BUCKET_UPLOADS: ${S3_BUCKET_UPLOADS:-fileconverter-uploads}
+      S3_BUCKET_RESULTS: ${S3_BUCKET_RESULTS:-fileconverter-results}
+      METRICS_PORT: 9090
+      CLEANUP_SCHEDULE_FILES: "0 2 * * *"
+      CLEANUP_SCHEDULE_DB: "0 3 * * *"
+      CLEANUP_RETENTION_FREE: 7
+      CLEANUP_RETENTION_PRO: 14
+      CLEANUP_RETENTION_BUSINESS: 30
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
   # ═══════════════════════════════════════════════════════════
   # CONVERSION WORKERS (Python)
   # ═══════════════════════════════════════════════════════════
@@ -422,7 +462,6 @@ services:
     build:
       context: ./workers/image-worker
       dockerfile: Dockerfile
-    container_name: fc_image_worker
     restart: unless-stopped
     depends_on:
       redis:
@@ -443,7 +482,6 @@ services:
     build:
       context: ./workers/video-worker
       dockerfile: Dockerfile
-    container_name: fc_video_worker
     restart: unless-stopped
     depends_on:
       redis:
@@ -464,7 +502,6 @@ services:
     build:
       context: ./workers/audio-worker
       dockerfile: Dockerfile
-    container_name: fc_audio_worker
     restart: unless-stopped
     depends_on:
       redis:
@@ -485,7 +522,6 @@ services:
     build:
       context: ./workers/document-worker
       dockerfile: Dockerfile
-    container_name: fc_document_worker
     restart: unless-stopped
     depends_on:
       redis:
@@ -506,7 +542,6 @@ services:
     build:
       context: ./workers/archive-worker
       dockerfile: Dockerfile
-    container_name: fc_archive_worker
     restart: unless-stopped
     depends_on:
       redis:
@@ -527,7 +562,6 @@ services:
     build:
       context: ./workers/cad-font-worker
       dockerfile: Dockerfile
-    container_name: fc_cad_font_worker
     restart: unless-stopped
     depends_on:
       redis:
@@ -550,7 +584,6 @@ services:
 
   prometheus:
     image: prom/prometheus:v2.49.1
-    container_name: fc_prometheus
     restart: unless-stopped
     ports:
       - "${PROMETHEUS_PORT:-9090}:9090"
@@ -568,7 +601,6 @@ services:
 
   grafana:
     image: grafana/grafana:10.3.1
-    container_name: fc_grafana
     restart: unless-stopped
     ports:
       - "${GRAFANA_PORT:-3100}:3000"
@@ -587,7 +619,6 @@ services:
 
   loki:
     image: grafana/loki:2.9.4
-    container_name: fc_loki
     restart: unless-stopped
     ports:
       - "${LOKI_PORT:-3200}:3100"
@@ -600,7 +631,6 @@ services:
 
   alertmanager:
     image: prom/alertmanager:v0.27.0
-    container_name: fc_alertmanager
     restart: unless-stopped
     ports:
       - "${ALERTMANAGER_PORT:-9093}:9093"
