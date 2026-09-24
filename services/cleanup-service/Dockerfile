@@ -6,7 +6,7 @@ COPY services/cleanup-service/package.json ./package.json
 RUN npm install
 COPY prisma/schema.prisma ./prisma/schema.prisma
 RUN ./node_modules/.bin/prisma generate --schema ./prisma/schema.prisma
-COPY services/cleanup-service/tsconfig.json ./tsconfig.json
+COPY services/cleanup-service/tsconfig.build.json ./tsconfig.json
 COPY services/cleanup-service/src ./src
 RUN npx tsc
 
