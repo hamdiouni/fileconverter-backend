@@ -45,6 +45,13 @@ sed -i 's/billing-service:3004/127.0.0.1:3004/g' /etc/nginx/nginx.conf
 sed -i 's/notification-service:3005/127.0.0.1:3005/g' /etc/nginx/nginx.conf
 sed -i 's/admin-service:3006/127.0.0.1:3006/g' /etc/nginx/nginx.conf
 
+# Support optional custom FRONTEND_URL or CORS_ORIGIN
+if [ -n "$FRONTEND_URL" ]; then
+  CLEAN_URL=$(echo "$FRONTEND_URL" | sed -e 's|^https\?://||' -e 's|/.*$||')
+  echo "[+] Registering frontend CORS origin: ${CLEAN_URL}"
+  sed -i "/default \"\";/a \        \"~^https?://([a-zA-Z0-9-]+\\\\.)*${CLEAN_URL}(:[0-9]+)?$\" \"\$http_origin\";" /etc/nginx/nginx.conf
+fi
+
 # Port resolution: Koyeb uses 8000/8080, Render uses 10000, Hugging Face uses 7860
 TARGET_PORT=${PORT:-8080}
 echo "[+] Nginx binding to port ${TARGET_PORT}"
